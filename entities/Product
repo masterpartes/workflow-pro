@@ -1,0 +1,15 @@
+{
+  "name": "Product",
+  "type": "object",
+  "properties": {
+    "nombre": { "type": "string", "description": "Nombre del producto" },
+    "descripcion": { "type": "string", "description": "Descripción detallada del producto" },
+    "clasificacion_arancelaria": { "type": "string", "description": "Código de clasificación arancelaria" },
+    "arancel": { "type": "number", "description": "Porcentaje de arancel aplicable" },
+    "precio_referencial": { "type": "number", "description": "Precio de referencia en el mercado" },
+    "peso_unitario": { "type": "number", "description": "Peso unitario en kg" },
+    "categoria": { "type": "string", "description": "Categoría del producto" },
+    "proveedor": { "type": "string", "description": "Nombre del proveedor" }
+  },
+  "required": ["nombre", "clasificacion_arancelaria"]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "Order",
+  "type": "object",
+  "properties": {
+    "numero_pedido": { "type": "string", "description": "Número único de pedido" },
+    "cliente": { "type": "string", "description": "Nombre del cliente" },
+    "fecha_pedido": { "type": "string", "format": "date", "description": "Fecha del pedido" },
+    "notas": { "type": "string", "description": "Notas adicionales del pedido" }
+  },
+  "required": ["numero_pedido", "cliente"]
+}

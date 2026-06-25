@@ -1,0 +1,25 @@
+{
+  "name": "OrderItem",
+  "type": "object",
+  "properties": {
+    "pedido_id": { "type": "string" },
+    "pedido_numero": { "type": "string" },
+    "producto_id": { "type": "string" },
+    "producto_nombre": { "type": "string" },
+    "cantidad": { "type": "number" },
+    "fecha_entrega_orden": { "type": "string", "format": "date" },
+    "precio_compra": { "type": "number" },
+    "precio_venta": { "type": "number" },
+    "estado": { "type": "string", "enum": ["adjudicado","comprado","transito","en_bodega","en_aduana","enviado_cliente","entregado"], "default": "adjudicado" },
+    "fecha_compra": { "type": "string", "format": "date" },
+    "tracking_number": { "type": "string" },
+    "fecha_miami": { "type": "string", "format": "date" },
+    "wr_bodega": { "type": "string" },
+    "awb": { "type": "string" },
+    "fecha_aduana": { "type": "string", "format": "date" },
+    "numero_guia": { "type": "string" },
+    "fecha_entrega": { "type": "string", "format": "date" },
+    "prueba_entrega": { "type": "string" }
+  },
+  "required": ["pedido_id", "producto_nombre", "cantidad", "fecha_entrega_orden"]
+}

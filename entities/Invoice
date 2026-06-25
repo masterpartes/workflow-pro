@@ -1,0 +1,20 @@
+{
+  "name": "Invoice",
+  "type": "object",
+  "properties": {
+    "numero_factura": { "type": "string", "description": "Número de factura" },
+    "pedido_id": { "type": "string", "description": "ID del pedido relacionado" },
+    "pedido_numero": { "type": "string", "description": "Número del pedido" },
+    "cliente": { "type": "string", "description": "Nombre del cliente" },
+    "monto_total": { "type": "number", "description": "Monto total de la factura" },
+    "estado": { "type": "string", "enum": ["pendiente","facturado","retencion","pagado"], "default": "pendiente" },
+    "fecha_emision": { "type": "string", "format": "date" },
+    "fecha_vencimiento": { "type": "string", "format": "date" },
+    "fecha_pago": { "type": "string", "format": "date" },
+    "archivo_pdf": { "type": "string" },
+    "archivo_xml": { "type": "string" },
+    "monto_retencion": { "type": "number" },
+    "notas": { "type": "string" }
+  },
+  "required": ["numero_factura", "pedido_numero", "cliente", "monto_total"]
+}
