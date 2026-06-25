@@ -10,10 +10,7 @@ export default function NavigationTracker() {
   const mainPageKey = mainPage ?? Object.keys(Pages)[0];
 
   useEffect(() => {
-    window.parent?.postMessage({
-      type: "app_changed_url",
-      url: window.location.href
-    }, '*');
+    // Navigation tracking: no-op in self-hosted version
   }, [location]);
 
   useEffect(() => {
@@ -27,7 +24,7 @@ export default function NavigationTracker() {
       const matchedKey = pageKeys.find(key => key.toLowerCase() === pathSegment.toLowerCase());
       pageName = matchedKey || null;
     }
-    // Navigation tracking handled locally — no remote logging in self-hosted version
+    // Navigation tracking handled locally
   }, [location, isAuthenticated, Pages, mainPageKey]);
 
   return null;

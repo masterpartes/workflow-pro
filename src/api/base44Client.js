@@ -57,4 +57,15 @@ const uploadFile = async ({ file }) => {
   const fileName = `${Date.now()}-${file.name}`;
   const { error } = await supabase.storage.from('uploads').upload(fileName, file, { upsert: true });
   if (error) throw error;
-  c
+  const { data: { publicUrl } } = supabase.storage.from('uploads').getPublicUrl(fileName);
+  return { file_url: publicUrl };
+};
+
+export const UploadedFile = { upload: uploadFile };
+
+// Compat shim: base44.entities.X mirrors the createEntity API
+import { Product, Order, OrderItem, Invoice } from './entities';
+export const base44 = {
+  entities: { Product, Order, OrderItem, Invoice },
+  storage: { upload: uploadFile },
+};
