@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Trash2, Package, ChevronDown, ChevronRight, Calendar, Pencil } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Trash2, Package, ChevronDown, ChevronRight, Calendar, Pencil, CheckSquare, Archive } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const getStatusText = (status) => {
@@ -54,7 +55,7 @@ const getDeliveryTextColor = (days) => {
   return "text-purple-700";
 };
 
-export default function OrderList({ orders, orderItems, isLoading, onEdit, onDelete, onSelect, selectedOrder }) {
+export default function OrderList({ orders, orderItems, isLoading, onEdit, onDelete, onSelect, selectedOrder, selectedIds = new Set(), onToggleSelect, onSelectAll, onBulkDelete, onBulkArchive, selectionMode, onToggleSelectionMode }) {
   const [expandedOrders, setExpandedOrders] = useState({});
 
   const toggleExpand = (orderId) => {
@@ -97,10 +98,59 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
     );
   }
 
+  const allActiveIds = activeOrders.map(o => o.id);
+  const allSelected = allActiveIds.length > 0 && allActiveIds.every(id => selectedIds.has(id));
+  const someSelected = selectedIds.size > 0;
+
   return (
     <Card className="border-none shadow-lg">
       <CardHeader className="border-b border-slate-100">
-        <CardTitle className="text-lg font-bold text-slate-900">Pedidos en Curso</CardTitle>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {selectionMode && (
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={(checked) => onSelectAll(checked ? allActiveIds : [])}
+                className="h-5 w-5"
+              />
+            )}
+            <CardTitle className="text-lg font-bold text-slate-900">Pedidos en Curso</CardTitle>
+          </div>
+          <Button
+            variant={selectionMode ? "default" : "outline"}
+            size="sm"
+            onClick={onToggleSelectionMode}
+            className={selectionMode ? "bg-purple-600 hover:bg-purple-700 text-white" : ""}
+          >
+            <CheckSquare className="w-4 h-4 mr-2" />
+            {selectionMode ? "Cancelar" : "Seleccionar"}
+          </Button>
+        </div>
+
+        {selectionMode && someSelected && (
+          <div className="mt-3 flex items-center gap-3 p-3 bg-purple-50 rounded-lg border border-purple-200">
+            <span className="text-sm font-semibold text-purple-700 flex-1">
+              {selectedIds.size} pedido{selectedIds.size !== 1 ? 's' : ''} seleccionado{selectedIds.size !== 1 ? 's' : ''}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onBulkArchive}
+              className="border-slate-400 hover:bg-slate-100 text-slate-700"
+            >
+              <Archive className="w-4 h-4 mr-1" />
+              Archivar
+            </Button>
+            <Button
+              size="sm"
+              onClick={onBulkDelete}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              <Trash2 className="w-4 h-4 mr-1" />
+              Eliminar
+            </Button>
+          </div>
+        )}
       </CardHeader>
       <CardContent className="p-6">
         {activeOrders.length === 0 ? (
@@ -116,37 +166,50 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
               const daysUntilDelivery = getDaysUntilDelivery(earliestDelivery);
               const isExpanded = expandedOrders[order.id];
               const isSelected = selectedOrder?.id === order.id;
+              const isChecked = selectedIds.has(order.id);
               return (
-                <div key={order.id} className={`border-2 rounded-xl transition-all ${isSelected ? 'border-purple-500 shadow-md' : 'border-slate-200'} ${getDeliveryColor(daysUntilDelivery)}`}>
-                  <div onClick={() => onSelect(order)} className="p-4 cursor-pointer">
+                <div key={order.id} className={`border-2 rounded-xl transition-all ${isChecked ? 'border-purple-500 bg-purple-50' : isSelected ? 'border-purple-500 shadow-md' : 'border-slate-200'} ${!isChecked ? getDeliveryColor(daysUntilDelivery) : ''}`}>
+                  <div onClick={() => selectionMode ? onToggleSelect(order.id) : onSelect(order)} className="p-4 cursor-pointer">
                     <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-2">
-                          <h3 className="font-bold text-slate-900">{order.numero_pedido}</h3>
-                          <Badge variant="outline" className="text-xs">{items.length} producto{items.length !== 1 ? 's' : ''}</Badge>
-                        </div>
-                        <p className="text-sm text-slate-600 mb-1">Cliente: {order.cliente}</p>
-                        {earliestDelivery && (
-                          <div className={`flex items-center gap-2 text-sm font-semibold ${getDeliveryTextColor(daysUntilDelivery)}`}>
-                            <Calendar className="w-4 h-4" />
-                            <span>Entrega: {new Date(earliestDelivery).toLocaleDateString('es-EC')} {daysUntilDelivery !== null && `(${daysUntilDelivery > 0 ? daysUntilDelivery + ' días' : 'Vencido'})`}</span>
-                          </div>
+                      <div className="flex items-start gap-3 flex-1">
+                        {selectionMode && (
+                          <Checkbox
+                            checked={isChecked}
+                            onCheckedChange={() => onToggleSelect(order.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-5 w-5 mt-1 shrink-0"
+                          />
                         )}
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 mb-2">
+                            <h3 className="font-bold text-slate-900">{order.numero_pedido}</h3>
+                            <Badge variant="outline" className="text-xs">{items.length} producto{items.length !== 1 ? 's' : ''}</Badge>
+                          </div>
+                          <p className="text-sm text-slate-600 mb-1">Cliente: {order.cliente}</p>
+                          {earliestDelivery && (
+                            <div className={`flex items-center gap-2 text-sm font-semibold ${getDeliveryTextColor(daysUntilDelivery)}`}>
+                              <Calendar className="w-4 h-4" />
+                              <span>Entrega: {new Date(earliestDelivery).toLocaleDateString('es-EC')} {daysUntilDelivery !== null && `(${daysUntilDelivery > 0 ? daysUntilDelivery + ' días' : 'Vencido'})`}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex gap-2 ml-4">
-                        <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); toggleExpand(order.id); }} className="text-slate-600">
-                          {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); onEdit(order); }} className="text-slate-600 hover:text-blue-600">
-                          <Pencil className="w-4 h-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); onDelete(order.id); }} className="text-slate-600 hover:text-red-600">
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      </div>
+                      {!selectionMode && (
+                        <div className="flex gap-2 ml-4">
+                          <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); toggleExpand(order.id); }} className="text-slate-600">
+                            {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); onEdit(order); }} className="text-slate-600 hover:text-blue-600">
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); onDelete(order.id); }} className="text-slate-600 hover:text-red-600">
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </div>
-                  {isExpanded && (
+                  {!selectionMode && isExpanded && (
                     <div className="px-4 pb-4 space-y-2 border-t">
                       {items.map((item) => (
                         <div key={item.id} className="mt-2 p-3 bg-white rounded-lg border">

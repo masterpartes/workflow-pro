@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import { base44 } from "@/api/base44Client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Plus, Archive } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import OrderList from "../components/pedidos/OrderList";
 import OrderForm from "../components/pedidos/OrderForm";
@@ -13,6 +14,8 @@ export default function Pedidos() {
   const [showForm, setShowForm] = useState(false);
   const [editingOrder, setEditingOrder] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const queryClient = useQueryClient();
 
   const { data: orders = [], isLoading } = useQuery({
@@ -69,6 +72,40 @@ export default function Pedidos() {
     },
   });
 
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids) => {
+      await Promise.all(ids.map(async (orderId) => {
+        const items = allOrderItems.filter(item => item.pedido_id === orderId);
+        await Promise.all(items.map(item => base44.entities.OrderItem.delete(item.id)));
+        await base44.entities.Order.delete(orderId);
+      }));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      queryClient.invalidateQueries({ queryKey: ["orderItems"] });
+      setSelectedIds(new Set());
+      setSelectionMode(false);
+      setSelectedOrder(null);
+    },
+  });
+
+  const bulkArchiveMutation = useMutation({
+    mutationFn: async (ids) => {
+      await Promise.all(ids.map(id => base44.entities.Order.update(id, { archivado: true })));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      setSelectedIds(new Set());
+      setSelectionMode(false);
+      setSelectedOrder(null);
+    },
+  });
+
+  const unarchiveMutation = useMutation({
+    mutationFn: (id) => base44.entities.Order.update(id, { archivado: false }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["orders"] }),
+  });
+
   const handleSubmit = async (orderData, items) => {
     if (editingOrder) {
       await updateOrderMutation.mutateAsync({ id: editingOrder.id, data: orderData });
@@ -84,6 +121,29 @@ export default function Pedidos() {
     }
   };
 
+  const activeOrders = orders.filter(o => !o.archivado);
+  const archivedOrders = orders.filter(o => o.archivado);
+
+  const handleToggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const handleSelectAll = (ids) => setSelectedIds(new Set(ids));
+  const handleToggleSelectionMode = () => {
+    setSelectionMode(prev => !prev);
+    setSelectedIds(new Set());
+  };
+  const handleBulkDelete = () => {
+    if (confirm(`¿Eliminar ${selectedIds.size} pedido${selectedIds.size !== 1 ? 's' : ''} y todos sus productos? Esta acción no se puede deshacer.`))
+      bulkDeleteMutation.mutate([...selectedIds]);
+  };
+  const handleBulkArchive = () => {
+    bulkArchiveMutation.mutate([...selectedIds]);
+  };
+
   return (
     <div className="p-6 lg:p-8 space-y-6">
       <div className="flex items-center justify-between">
@@ -92,7 +152,7 @@ export default function Pedidos() {
           <p className="text-slate-600">Gestiona pedidos y rastrea el estado de cada producto</p>
         </div>
         <Button
-          onClick={() => { setEditingOrder(null); setSelectedOrder(null); setShowForm(true); }}
+          onClick={() => { setEditingOrder(null); setSelectedOrder(null); setShowForm(true); setSelectionMode(false); }}
           className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 shadow-lg"
         >
           <Plus className="w-5 h-5 mr-2" />
@@ -103,6 +163,12 @@ export default function Pedidos() {
         <TabsList className="mb-6">
           <TabsTrigger value="active">Pedidos en Curso</TabsTrigger>
           <TabsTrigger value="completed">Pedidos Completados</TabsTrigger>
+          <TabsTrigger value="archived" className="relative">
+            Archivados
+            {archivedOrders.length > 0 && (
+              <Badge className="ml-2 bg-slate-500 text-white text-xs px-1.5 py-0">{archivedOrders.length}</Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="active">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -118,18 +184,25 @@ export default function Pedidos() {
                 />
               ) : (
                 <OrderList
-                  orders={orders}
+                  orders={activeOrders}
                   orderItems={allOrderItems}
                   isLoading={isLoading}
                   onEdit={(order) => { setEditingOrder(order); setSelectedOrder(null); setShowForm(true); }}
                   onDelete={(id) => { if (confirm("¿Estás seguro de eliminar este pedido y todos sus productos?")) deleteOrderMutation.mutate(id); }}
                   onSelect={(order) => { setSelectedOrder(order); setShowForm(false); }}
                   selectedOrder={selectedOrder}
+                  selectionMode={selectionMode}
+                  selectedIds={selectedIds}
+                  onToggleSelect={handleToggleSelect}
+                  onSelectAll={handleSelectAll}
+                  onBulkDelete={handleBulkDelete}
+                  onBulkArchive={handleBulkArchive}
+                  onToggleSelectionMode={handleToggleSelectionMode}
                 />
               )}
             </div>
             <div>
-              {selectedOrder && (
+              {selectedOrder && !selectionMode && (
                 <OrderDetail
                   order={selectedOrder}
                   orderItems={allOrderItems.filter(item => item.pedido_id === selectedOrder.id)}
@@ -139,7 +212,42 @@ export default function Pedidos() {
           </div>
         </TabsContent>
         <TabsContent value="completed">
-          <CompletedOrders orders={orders} orderItems={allOrderItems} />
+          <CompletedOrders orders={activeOrders} orderItems={allOrderItems} />
+        </TabsContent>
+        <TabsContent value="archived">
+          <div className="space-y-3">
+            {archivedOrders.length === 0 ? (
+              <div className="text-center py-16">
+                <Archive className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <p className="text-slate-600">No hay pedidos archivados</p>
+              </div>
+            ) : (
+              archivedOrders.map((order) => {
+                const items = allOrderItems.filter(item => item.pedido_id === order.id);
+                return (
+                  <div key={order.id} className="border-2 border-slate-200 rounded-xl bg-slate-50 p-4 flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-3 mb-1">
+                        <h3 className="font-bold text-slate-700">{order.numero_pedido}</h3>
+                        <Badge variant="outline" className="text-xs text-slate-500">{items.length} producto{items.length !== 1 ? 's' : ''}</Badge>
+                      </div>
+                      <p className="text-sm text-slate-500">Cliente: {order.cliente}</p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => unarchiveMutation.mutate(order.id)}
+                      disabled={unarchiveMutation.isPending}
+                      className="shrink-0"
+                    >
+                      <Archive className="w-4 h-4 mr-1" />
+                      Desarchivar
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </TabsContent>
       </Tabs>
     </div>
