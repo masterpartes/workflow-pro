@@ -64,8 +64,8 @@ const uploadFile = async ({ file }) => {
 export const UploadedFile = { upload: uploadFile };
 
 // Compat shim: base44.entities.X mirrors the createEntity API
-import { Product, Order, OrderItem, Invoice } from './entities';
+import { Product, Order, OrderItem, Invoice, TariffCode } from './entities';
 export const base44 = {
-  entities: { Product, Order, OrderItem, Invoice },
+  entities: { Product, Order, OrderItem, Invoice, TariffCode },
   storage: { upload: uploadFile },
 };
