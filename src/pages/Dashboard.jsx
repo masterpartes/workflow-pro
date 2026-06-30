@@ -6,6 +6,7 @@ import { createPageUrl } from "@/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calculator, Package, FileText, TrendingUp, ShoppingCart, Truck, DollarSign } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import TodoPanel from "@/components/dashboard/TodoPanel";
 
 export default function Dashboard() {
   const { data: products = [] } = useQuery({
@@ -44,6 +45,8 @@ export default function Dashboard() {
         <h1 className="text-3xl font-bold text-slate-900 mb-2">Dashboard</h1>
         <p className="text-slate-600">Resumen general de tu operación de importación</p>
       </div>
+
+      {/* ── KPI cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card className="border-none shadow-lg bg-gradient-to-br from-blue-500 to-blue-600 text-white overflow-hidden relative">
           <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16" />
@@ -66,6 +69,8 @@ export default function Dashboard() {
           <CardContent><div className="text-3xl font-bold mb-1">${totalRevenue.toFixed(2)}</div><p className="text-green-100 text-sm">Ingresos Cobrados</p></CardContent>
         </Card>
       </div>
+
+      {/* ── Recent lists ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="border-none shadow-lg">
           <CardHeader className="border-b border-slate-100">
@@ -117,6 +122,9 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ── To-do panel ── */}
+      <TodoPanel />
     </div>
   );
 }
