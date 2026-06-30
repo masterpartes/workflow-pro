@@ -4,15 +4,21 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Calculator, Package, FileText, TrendingUp, ShoppingCart, Truck, DollarSign } from "lucide-react";
+import { CheckSquare, Package, FileText, TrendingUp, ShoppingCart, Truck, DollarSign } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import TodoPanel from "@/components/dashboard/TodoPanel";
+import { Tarea } from "@/api/entities";
 
 export default function Dashboard() {
-  const { data: products = [] } = useQuery({
-    queryKey: ["products"],
-    queryFn: () => base44.entities.Product.list(),
+  const { data: tareas = [] } = useQuery({
+    queryKey: ["tareas"],
+    queryFn: () => Tarea.list("fecha_vencimiento"),
   });
+
+  const tareasPendientes = tareas.filter(t => t.estado === "pendiente");
+  const tareasAlejandro  = tareasPendientes.filter(t => t.asignado_a === "Alejandro").length;
+  const tareasSantiago   = tareasPendientes.filter(t => t.asignado_a === "Santiago").length;
+  const tareasAmbos      = tareasPendientes.filter(t => t.asignado_a === "Ambos").length;
   const { data: orders = [] } = useQuery({
     queryKey: ["orders"],
     queryFn: () => base44.entities.Order.list("-created_date"),
@@ -50,8 +56,27 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <Card className="border-none shadow-lg bg-gradient-to-br from-blue-500 to-blue-600 text-white overflow-hidden relative">
           <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16" />
-          <CardHeader className="pb-3"><div className="flex items-center justify-between"><Calculator className="w-8 h-8" /><TrendingUp className="w-5 h-5 opacity-70" /></div></CardHeader>
-          <CardContent><div className="text-3xl font-bold mb-1">{products.length}</div><p className="text-blue-100 text-sm">Productos en Catálogo</p></CardContent>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CheckSquare className="w-8 h-8" />
+              <TrendingUp className="w-5 h-5 opacity-70" />
+            </div>
+            <p className="text-blue-100 text-sm mt-1">Tareas Pendientes</p>
+          </CardHeader>
+          <CardContent className="pt-0 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-blue-200 text-xs">Alejandro</span>
+              <span className="text-2xl font-bold">{tareasAlejandro}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-blue-200 text-xs">Santiago</span>
+              <span className="text-2xl font-bold">{tareasSantiago}</span>
+            </div>
+            <div className="flex items-center justify-between border-t border-blue-400/40 pt-1.5">
+              <span className="text-blue-200 text-xs">Ambos</span>
+              <span className="text-2xl font-bold">{tareasAmbos}</span>
+            </div>
+          </CardContent>
         </Card>
         <Card className="border-none shadow-lg bg-gradient-to-br from-purple-500 to-purple-600 text-white overflow-hidden relative">
           <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16" />
