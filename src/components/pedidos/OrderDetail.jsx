@@ -143,7 +143,7 @@ export default function OrderDetail({ order, orderItems, onEdit }) {
   };
 
   return (
-    <Card className="border-none shadow-lg sticky top-6">
+    <Card className="border-none shadow-lg">
       <CardHeader className="border-b border-slate-100 bg-gradient-to-r from-purple-50 to-indigo-50">
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg font-bold text-slate-900">Detalle del Pedido</CardTitle>
