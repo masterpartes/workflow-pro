@@ -48,13 +48,17 @@ function urgency(tarea) {
   return "ok";
 }
 
+// Color palette per user spec:
+//   purple  → same day or late  (hoy / vencida)
+//   yellow  → < 3 days remaining (pronto)
+//   green   → > 3 days remaining (ok / done)
 const URGENCY_STYLES = {
-  vencida:  { card: "border-red-300 bg-red-50",    badge: "bg-red-100 text-red-800 border-red-200",     label: "VENCIDA" },
-  hoy:      { card: "border-amber-300 bg-amber-50", badge: "bg-amber-100 text-amber-800 border-amber-200", label: "VENCE HOY" },
-  pronto:   { card: "border-yellow-300 bg-yellow-50", badge: "bg-yellow-100 text-yellow-800 border-yellow-200", label: "PRÓXIMA" },
-  ok:       { card: "border-slate-200 bg-white",   badge: "bg-slate-100 text-slate-600 border-slate-200", label: "" },
-  done:     { card: "border-green-200 bg-green-50", badge: "bg-green-100 text-green-800 border-green-200", label: "COMPLETADA" },
-  archived: { card: "border-slate-200 bg-slate-50", badge: "bg-slate-100 text-slate-500 border-slate-200", label: "" },
+  vencida:  { card: "border-purple-400 bg-purple-50",  badge: "bg-purple-100 text-purple-800 border-purple-300", label: "VENCIDA" },
+  hoy:      { card: "border-purple-400 bg-purple-50",  badge: "bg-purple-100 text-purple-800 border-purple-300", label: "VENCE HOY" },
+  pronto:   { card: "border-yellow-300 bg-yellow-50",  badge: "bg-yellow-100 text-yellow-800 border-yellow-200", label: "< 3 DÍAS" },
+  ok:       { card: "border-green-300 bg-green-50",    badge: "bg-green-100 text-green-800 border-green-200",   label: "" },
+  done:     { card: "border-green-200 bg-green-50",    badge: "bg-green-100 text-green-800 border-green-200",   label: "COMPLETADA" },
+  archived: { card: "border-slate-200 bg-slate-50",    badge: "bg-slate-100 text-slate-500 border-slate-200",  label: "" },
 };
 
 function formatDate(str) {
@@ -82,13 +86,15 @@ export default function TodoPanel() {
   const qc = useQueryClient();
   const fileRef = useRef(null);
 
-  const [activeTab,     setActiveTab]     = useState("pendientes");
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedIds,   setSelectedIds]   = useState(new Set());
-  const [showDialog,    setShowDialog]    = useState(false);
-  const [form,          setForm]          = useState(emptyForm());
-  const [uploading,     setUploading]     = useState(false);
-  const [saving,        setSaving]        = useState(false);
+  const [activeTab,        setActiveTab]        = useState("pendientes");
+  const [selectionMode,    setSelectionMode]    = useState(false);
+  const [selectedIds,      setSelectedIds]      = useState(new Set());
+  const [showDialog,       setShowDialog]       = useState(false);
+  const [form,             setForm]             = useState(emptyForm());
+  const [uploading,        setUploading]        = useState(false);
+  const [saving,           setSaving]           = useState(false);
+  const [filterResponsable, setFilterResponsable] = useState("Todos");
+  const [filterFecha,      setFilterFecha]      = useState(""); // YYYY-MM-DD
 
   // ── Data ────────────────────────────────────────────────────────────────────
   const { data: allTareas = [], isLoading } = useQuery({
@@ -99,6 +105,17 @@ export default function TodoPanel() {
   const activas    = useMemo(() => allTareas.filter(t => t.estado !== "archivado"), [allTareas]);
   const archivadas = useMemo(() => allTareas.filter(t => t.estado === "archivado"), [allTareas]);
   const vencidas   = useMemo(() => activas.filter(t => urgency(t) === "vencida"),   [activas]);
+
+  // ── Filtered views ──────────────────────────────────────────────────────────
+  function applyFilters(list) {
+    return list.filter(t => {
+      if (filterResponsable !== "Todos" && t.asignado_a !== filterResponsable) return false;
+      if (filterFecha && t.fecha_vencimiento > filterFecha) return false;
+      return true;
+    });
+  }
+  const activasFiltradas   = useMemo(() => applyFilters(activas),   [activas, filterResponsable, filterFecha]);
+  const archivadsFiltradas = useMemo(() => applyFilters(archivadas), [archivadas, filterResponsable, filterFecha]);
 
   // ── Mutations ───────────────────────────────────────────────────────────────
   const invalidate = () => qc.invalidateQueries({ queryKey: ["tareas"] });
@@ -339,6 +356,36 @@ export default function TodoPanel() {
         </CardHeader>
 
         <CardContent className="pt-4 pb-2">
+          {/* ── Filters ── */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4 px-3 py-2.5 bg-slate-50 rounded-xl border border-slate-100">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span className="text-xs text-slate-500 font-medium mr-0.5">Responsable:</span>
+              {["Todos", "Santiago", "Alejandro", "Ambos"].map(u => (
+                <button key={u} onClick={() => setFilterResponsable(u)}
+                  className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                    filterResponsable === u
+                      ? "bg-slate-800 text-white border-slate-800"
+                      : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+                  }`}>
+                  {u}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span className="text-xs text-slate-500 font-medium">Vence antes de:</span>
+              <input type="date" value={filterFecha}
+                onChange={e => setFilterFecha(e.target.value)}
+                className="text-xs h-6 px-2 rounded border border-slate-200 bg-white text-slate-700 focus:outline-none focus:border-slate-400" />
+              {filterFecha && (
+                <button onClick={() => setFilterFecha("")} className="text-slate-400 hover:text-red-500">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* ── Warning banner ── */}
           {vencidas.length > 0 && (
             <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3">
@@ -368,17 +415,17 @@ export default function TodoPanel() {
             <TabsList className="mb-4 bg-slate-100">
               <TabsTrigger value="pendientes" className="text-xs">
                 Pendientes
-                {activas.length > 0 && (
+                {activasFiltradas.length > 0 && (
                   <span className="ml-1.5 bg-slate-700 text-white text-[10px] rounded-full px-1.5 py-0.5 leading-none">
-                    {activas.length}
+                    {activasFiltradas.length}
                   </span>
                 )}
               </TabsTrigger>
               <TabsTrigger value="archivadas" className="text-xs">
                 Archivadas
-                {archivadas.length > 0 && (
+                {archivadsFiltradas.length > 0 && (
                   <span className="ml-1.5 bg-slate-400 text-white text-[10px] rounded-full px-1.5 py-0.5 leading-none">
-                    {archivadas.length}
+                    {archivadsFiltradas.length}
                   </span>
                 )}
               </TabsTrigger>
@@ -388,16 +435,16 @@ export default function TodoPanel() {
             <TabsContent value="pendientes" className="mt-0">
               {isLoading ? (
                 <div className="py-10 text-center text-slate-400 text-sm">Cargando tareas...</div>
-              ) : activas.length === 0 ? (
+              ) : activasFiltradas.length === 0 ? (
                 <div className="py-10 text-center text-slate-400">
                   <CheckCircle2 className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">No hay tareas pendientes</p>
+                  <p className="text-sm">{activas.length === 0 ? "No hay tareas pendientes" : "Sin resultados para este filtro"}</p>
                 </div>
               ) : (
                 <>
-                  <TabToolbar list={activas} isArchived={false} />
+                  <TabToolbar list={activasFiltradas} isArchived={false} />
                   <div className="space-y-3">
-                    {activas.map(t => <TaskCard key={t.id} tarea={t} isArchived={false} />)}
+                    {activasFiltradas.map(t => <TaskCard key={t.id} tarea={t} isArchived={false} />)}
                   </div>
                 </>
               )}
@@ -405,16 +452,16 @@ export default function TodoPanel() {
 
             {/* Archivadas */}
             <TabsContent value="archivadas" className="mt-0">
-              {archivadas.length === 0 ? (
+              {archivadsFiltradas.length === 0 ? (
                 <div className="py-10 text-center text-slate-400">
                   <Archive className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                  <p className="text-sm">No hay tareas archivadas</p>
+                  <p className="text-sm">{archivadas.length === 0 ? "No hay tareas archivadas" : "Sin resultados para este filtro"}</p>
                 </div>
               ) : (
                 <>
-                  <TabToolbar list={archivadas} isArchived={true} />
+                  <TabToolbar list={archivadsFiltradas} isArchived={true} />
                   <div className="space-y-3">
-                    {archivadas.map(t => <TaskCard key={t.id} tarea={t} isArchived={true} />)}
+                    {archivadsFiltradas.map(t => <TaskCard key={t.id} tarea={t} isArchived={true} />)}
                   </div>
                 </>
               )}
