@@ -3,12 +3,33 @@ import { base44 } from "@/api/base44Client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Archive } from "lucide-react";
+import { Plus, Archive, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import OrderList from "../components/pedidos/OrderList";
 import OrderForm from "../components/pedidos/OrderForm";
 import OrderDetail from "../components/pedidos/OrderDetail";
 import CompletedOrders from "../components/pedidos/CompletedOrders";
+
+function ArchivedActionSelect({ orderId, onUnarchive, onDelete }) {
+  const [key, setKey] = React.useState(0);
+  const handle = (v) => {
+    if (v === "unarchive") onUnarchive();
+    if (v === "delete")    onDelete();
+    setKey(k => k + 1);
+  };
+  return (
+    <Select key={key} onValueChange={handle}>
+      <SelectTrigger className="w-40 h-8 text-xs shrink-0">
+        <SelectValue placeholder="Acciones" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="unarchive">Volver a En Curso</SelectItem>
+        <SelectItem value="delete" className="text-red-600">Eliminar</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
 
 export default function Pedidos() {
   const [showForm, setShowForm] = useState(false);
@@ -106,6 +127,23 @@ export default function Pedidos() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["orders"] }),
   });
 
+  // Reset all items back to 'adjudicado' so order leaves Completados → En Curso
+  const reopenOrderMutation = useMutation({
+    mutationFn: async (orderId) => {
+      const items = allOrderItems.filter(i => i.pedido_id === orderId);
+      await Promise.all(items.map(i => base44.entities.OrderItem.update(i.id, { estado: 'adjudicado' })));
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["orderItems"] }),
+  });
+
+  const archiveOrderMutation = useMutation({
+    mutationFn: (id) => base44.entities.Order.update(id, { archivado: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      setSelectedOrder(null);
+    },
+  });
+
   // Sanitize items before sending to Supabase:
   // - producto_id must be null (not "") when not linked to a product
   // - fecha_entrega_orden must be null (not "") when not set
@@ -199,6 +237,7 @@ export default function Pedidos() {
                   isLoading={isLoading}
                   onEdit={(order) => { setEditingOrder(order); setSelectedOrder(null); setShowForm(true); }}
                   onDelete={(id) => { if (confirm("¿Estás seguro de eliminar este pedido y todos sus productos?")) deleteOrderMutation.mutate(id); }}
+                  onArchive={(id) => archiveOrderMutation.mutate(id)}
                   onSelect={(order) => { setSelectedOrder(order); setShowForm(false); }}
                   selectedOrder={selectedOrder}
                   selectionMode={selectionMode}
@@ -222,7 +261,13 @@ export default function Pedidos() {
           </div>
         </TabsContent>
         <TabsContent value="completed">
-          <CompletedOrders orders={activeOrders} orderItems={allOrderItems} />
+          <CompletedOrders
+            orders={activeOrders}
+            orderItems={allOrderItems}
+            onDelete={(id) => { if (confirm("¿Eliminar este pedido y todos sus productos?")) deleteOrderMutation.mutate(id); }}
+            onArchive={(id) => archiveOrderMutation.mutate(id)}
+            onReopen={(id) => reopenOrderMutation.mutate(id)}
+          />
         </TabsContent>
         <TabsContent value="archived">
           <div className="space-y-3">
@@ -243,16 +288,11 @@ export default function Pedidos() {
                       </div>
                       <p className="text-sm text-slate-500">Cliente: {order.cliente}</p>
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => unarchiveMutation.mutate(order.id)}
-                      disabled={unarchiveMutation.isPending}
-                      className="shrink-0"
-                    >
-                      <Archive className="w-4 h-4 mr-1" />
-                      Desarchivar
-                    </Button>
+                    <ArchivedActionSelect
+                      orderId={order.id}
+                      onUnarchive={() => unarchiveMutation.mutate(order.id)}
+                      onDelete={() => { if (confirm("¿Eliminar este pedido y todos sus productos?")) deleteOrderMutation.mutate(order.id); }}
+                    />
                   </div>
                 );
               })

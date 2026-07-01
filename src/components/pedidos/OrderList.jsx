@@ -3,8 +3,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Trash2, Package, ChevronDown, ChevronRight, Calendar, Pencil, CheckSquare, Archive, AlertTriangle, Clock, CheckCircle2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Package, ChevronDown, ChevronRight, Calendar, Pencil, CheckSquare, Archive, AlertTriangle, Clock, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+
+function ActionSelect({ orderId, onEdit, onArchive, onDelete }) {
+  const [key, setKey] = useState(0);
+  const handle = (v) => {
+    if (v === "edit")    onEdit(orderId);
+    if (v === "archive") onArchive(orderId);
+    if (v === "delete")  onDelete(orderId);
+    setKey(k => k + 1);
+  };
+  return (
+    <Select key={key} onValueChange={handle}>
+      <SelectTrigger className="w-36 h-8 text-xs" onClick={e => e.stopPropagation()}>
+        <SelectValue placeholder="Acciones" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="edit">Editar</SelectItem>
+        <SelectItem value="archive">Mover a Archivo</SelectItem>
+        <SelectItem value="delete" className="text-red-600">Eliminar</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
 
 const getStatusText = (status) => {
   const statusMap = {
@@ -97,7 +120,7 @@ const getDaysUntilDelivery = (deliveryDate) => {
   return Math.ceil((delivery - today) / 86400000);
 };
 
-export default function OrderList({ orders, orderItems, isLoading, onEdit, onDelete, onSelect, selectedOrder, selectedIds = new Set(), onToggleSelect, onSelectAll, onBulkDelete, onBulkArchive, selectionMode, onToggleSelectionMode }) {
+export default function OrderList({ orders, orderItems, isLoading, onEdit, onDelete, onArchive, onSelect, selectedOrder, selectedIds = new Set(), onToggleSelect, onSelectAll, onBulkDelete, onBulkArchive, selectionMode, onToggleSelectionMode }) {
   const [expandedOrders, setExpandedOrders] = useState({});
 
   const toggleExpand = (orderId) => {
@@ -244,15 +267,15 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
                         </div>
                       </div>
                       {!selectionMode && (
-                        <div className="flex gap-2 ml-4">
+                        <div className="flex items-center gap-2 ml-4">
+                          <ActionSelect
+                            orderId={order.id}
+                            onEdit={() => onEdit(order)}
+                            onArchive={onArchive}
+                            onDelete={onDelete}
+                          />
                           <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); toggleExpand(order.id); }} className="text-slate-600">
                             {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                          </Button>
-                          <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); onEdit(order); }} className="text-slate-600 hover:text-blue-600">
-                            <Pencil className="w-4 h-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); onDelete(order.id); }} className="text-slate-600 hover:text-red-600">
-                            <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
                       )}

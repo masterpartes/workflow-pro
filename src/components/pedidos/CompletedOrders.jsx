@@ -4,9 +4,32 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Calendar, Package, ChevronDown, ChevronRight } from "lucide-react";
 
-export default function CompletedOrders({ orders, orderItems }) {
+function ActionSelect({ orderId, onDelete, onArchive, onReopen }) {
+  const [key, setKey] = useState(0);
+  const handle = (v) => {
+    if (v === "delete")  onDelete(orderId);
+    if (v === "archive") onArchive(orderId);
+    if (v === "reopen")  onReopen(orderId);
+    setKey(k => k + 1);
+  };
+  return (
+    <Select key={key} onValueChange={handle}>
+      <SelectTrigger className="w-40 h-8 text-xs" onClick={e => e.stopPropagation()}>
+        <SelectValue placeholder="Acciones" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="reopen">Volver a En Curso</SelectItem>
+        <SelectItem value="archive">Mover a Archivo</SelectItem>
+        <SelectItem value="delete" className="text-red-600">Eliminar</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
+export default function CompletedOrders({ orders, orderItems, onDelete, onArchive, onReopen }) {
   const [filterClient, setFilterClient] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
@@ -72,9 +95,12 @@ export default function CompletedOrders({ orders, orderItems }) {
                           </div>
                           <p className="text-sm text-slate-600">Cliente: {order.cliente}</p>
                         </div>
-                        <Button variant="ghost" size="icon" onClick={() => toggleExpand(order.id)}>
-                          {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <ActionSelect orderId={order.id} onDelete={onDelete} onArchive={onArchive} onReopen={onReopen} />
+                          <Button variant="ghost" size="icon" onClick={() => toggleExpand(order.id)}>
+                            {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                          </Button>
+                        </div>
                       </div>
                     </div>
                     {isExpanded && (
