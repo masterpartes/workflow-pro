@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ArrowRight, Upload, ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowRight, Upload, ArrowLeft, Trash2, Pencil, Plus } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { base44 } from "@/api/base44Client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -39,12 +40,26 @@ const getRequiredFields = (currentStatus, nextStatus) => {
   return requirements[`${currentStatus}-${nextStatus}`] || [];
 };
 
-export default function OrderDetail({ order, orderItems }) {
+const STATUS_OPTIONS = [
+  { value: "adjudicado",      label: "Adjudicado" },
+  { value: "comprado",        label: "Comprado" },
+  { value: "transito",        label: "Tránsito" },
+  { value: "en_bodega",       label: "En Bodega" },
+  { value: "en_aduana",       label: "En Aduana" },
+  { value: "enviado_cliente", label: "Enviado a Cliente" },
+  { value: "entregado",       label: "Entregado" },
+];
+
+export default function OrderDetail({ order, orderItems, onEdit }) {
   const queryClient = useQueryClient();
   const [editingItem, setEditingItem] = useState(null);
   const [formData, setFormData] = useState({});
   const [uploading, setUploading] = useState(false);
   const [applyToAll, setApplyToAll] = useState(false);
+
+  // Inline add-product state
+  const [addingProduct, setAddingProduct] = useState(false);
+  const [newProduct, setNewProduct] = useState({ producto_nombre: "", cantidad: 1, fecha_entrega_orden: "", estado: "adjudicado", precio_compra: 0, precio_venta: 0 });
 
   const updateItemMutation = useMutation({
     mutationFn: ({ id, data }) => base44.entities.OrderItem.update(id, data),
@@ -55,6 +70,30 @@ export default function OrderDetail({ order, orderItems }) {
     mutationFn: (id) => base44.entities.OrderItem.delete(id),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['orderItems'] }); },
   });
+
+  const createItemMutation = useMutation({
+    mutationFn: (item) => base44.entities.OrderItem.create(item),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orderItems'] });
+      setAddingProduct(false);
+      setNewProduct({ producto_nombre: "", cantidad: 1, fecha_entrega_orden: "", estado: "adjudicado", precio_compra: 0, precio_venta: 0 });
+    },
+  });
+
+  const handleAddProduct = () => {
+    if (!newProduct.producto_nombre.trim()) return;
+    createItemMutation.mutate({
+      pedido_id: order.id,
+      pedido_numero: order.numero_pedido,
+      producto_id: null,
+      producto_nombre: newProduct.producto_nombre.trim(),
+      cantidad: newProduct.cantidad || 1,
+      fecha_entrega_orden: newProduct.fecha_entrega_orden || null,
+      precio_compra: newProduct.precio_compra || null,
+      precio_venta: newProduct.precio_venta || null,
+      estado: newProduct.estado || "adjudicado",
+    });
+  };
 
   const handleAdvanceStatus = (item) => {
     const nextStatus = getNextStatus(item.estado);
@@ -106,7 +145,14 @@ export default function OrderDetail({ order, orderItems }) {
   return (
     <Card className="border-none shadow-lg sticky top-6">
       <CardHeader className="border-b border-slate-100 bg-gradient-to-r from-purple-50 to-indigo-50">
-        <CardTitle className="text-lg font-bold text-slate-900">Detalle del Pedido</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg font-bold text-slate-900">Detalle del Pedido</CardTitle>
+          {onEdit && (
+            <Button size="sm" variant="outline" onClick={onEdit} className="border-purple-300 text-purple-700 hover:bg-purple-50">
+              <Pencil className="w-3 h-3 mr-1" />Editar
+            </Button>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="p-6 space-y-4">
         <div>
@@ -114,7 +160,14 @@ export default function OrderDetail({ order, orderItems }) {
           <p className="text-sm text-slate-600">Cliente: {order.cliente}</p>
         </div>
         <div className="border-t pt-4">
-          <h4 className="font-semibold text-slate-900 mb-3">Productos ({orderItems.length})</h4>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="font-semibold text-slate-900">Productos ({orderItems.length})</h4>
+            {!addingProduct && (
+              <Button size="sm" variant="outline" onClick={() => setAddingProduct(true)} className="h-7 text-xs border-purple-300 text-purple-700 hover:bg-purple-50">
+                <Plus className="w-3 h-3 mr-1" />Agregar
+              </Button>
+            )}
+          </div>
           <div className="space-y-3">
             {orderItems.map((item) => {
               const nextStatus = getNextStatus(item.estado);
@@ -177,6 +230,62 @@ export default function OrderDetail({ order, orderItems }) {
               );
             })}
           </div>
+          {/* Inline add product form */}
+          {addingProduct && (
+            <div className="mt-3 p-3 border-2 border-dashed border-purple-300 rounded-lg bg-purple-50 space-y-2">
+              <p className="text-xs font-semibold text-purple-700">Nuevo producto</p>
+              <Input
+                placeholder="Nombre del producto *"
+                value={newProduct.producto_nombre}
+                onChange={e => setNewProduct(p => ({ ...p, producto_nombre: e.target.value }))}
+                className="h-8 text-sm"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <Input
+                  type="number" min="1" placeholder="Cantidad"
+                  value={newProduct.cantidad}
+                  onChange={e => setNewProduct(p => ({ ...p, cantidad: parseInt(e.target.value) || 1 }))}
+                  className="h-8 text-sm"
+                />
+                <Input
+                  type="date" placeholder="Fecha entrega"
+                  value={newProduct.fecha_entrega_orden}
+                  onChange={e => setNewProduct(p => ({ ...p, fecha_entrega_orden: e.target.value }))}
+                  className="h-8 text-sm"
+                />
+                <Input
+                  type="number" step="0.01" placeholder="Precio compra"
+                  value={newProduct.precio_compra || ""}
+                  onChange={e => setNewProduct(p => ({ ...p, precio_compra: parseFloat(e.target.value) || 0 }))}
+                  className="h-8 text-sm"
+                />
+                <Input
+                  type="number" step="0.01" placeholder="Precio venta"
+                  value={newProduct.precio_venta || ""}
+                  onChange={e => setNewProduct(p => ({ ...p, precio_venta: parseFloat(e.target.value) || 0 }))}
+                  className="h-8 text-sm"
+                />
+              </div>
+              <Select value={newProduct.estado} onValueChange={v => setNewProduct(p => ({ ...p, estado: v }))}>
+                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {STATUS_OPTIONS.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <div className="flex gap-2 pt-1">
+                <Button
+                  size="sm" onClick={handleAddProduct}
+                  disabled={createItemMutation.isPending || !newProduct.producto_nombre.trim()}
+                  className="flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white"
+                >
+                  {createItemMutation.isPending ? "Guardando…" : "Agregar"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setAddingProduct(false)} className="flex-1">
+                  Cancelar
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>

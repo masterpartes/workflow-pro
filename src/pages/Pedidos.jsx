@@ -264,6 +264,7 @@ export default function Pedidos() {
                 <OrderDetail
                   order={selectedOrder}
                   orderItems={allOrderItems.filter(item => item.pedido_id === selectedOrder.id)}
+                  onEdit={() => { setEditingOrder(selectedOrder); setSelectedOrder(null); setShowForm(true); }}
                 />
               )}
             </div>
