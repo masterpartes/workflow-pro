@@ -174,6 +174,9 @@ export default function Dashboard() {
         </Card>
       </div>
 
+      {/* ── To-do panel ── */}
+      <TodoPanel />
+
       {/* ── Recent lists ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="border-none shadow-lg">
@@ -227,8 +230,6 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* ── To-do panel ── */}
-      <TodoPanel />
     </div>
   );
 }
