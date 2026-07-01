@@ -4,31 +4,87 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { CheckSquare, Package, FileText, TrendingUp, ShoppingCart, Truck, DollarSign } from "lucide-react";
+import { CheckSquare, Package, FileText, TrendingUp, ShoppingCart, Truck, DollarSign, AlertTriangle, Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import TodoPanel from "@/components/dashboard/TodoPanel";
 import { Tarea } from "@/api/entities";
+
+// ── SLA thresholds ────────────────────────────────────────────────────────────
+const SLA_PURCHASE        = 5;   // days since creation → must be purchased
+const SLA_SHIPMENT        = 10;  // days since creation → must be shipped
+const SLA_WAREHOUSE       = 20;  // days since creation → must be in warehouse
+const SLA_DELIVERY_URGENT = 5;   // days remaining to delivery → urgent
+const SLA_DELIVERY_ALERT  = 10;  // days remaining to delivery → alert
+
+// Returns: 'late' | 'urgent' | 'alert' | 'ok'
+function getOrderHealth(order, items) {
+  const activeItems = items.filter(i => i.pedido_id === order.id && i.estado !== 'entregado');
+  if (activeItems.length === 0) return 'ok';
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const created = new Date(order.created_date); created.setHours(0, 0, 0, 0);
+  const daysSince = Math.floor((today - created) / 86400000);
+
+  // SLA process violations (highest priority)
+  for (const item of activeItems) {
+    const s = item.estado;
+    if (s === 'adjudicado' && daysSince > SLA_PURCHASE)                                           return 'late';
+    if (['adjudicado','comprado'].includes(s) && daysSince > SLA_SHIPMENT)                        return 'late';
+    if (['adjudicado','comprado','transito','en_aduana'].includes(s) && daysSince > SLA_WAREHOUSE) return 'late';
+  }
+
+  // Delivery date proximity
+  let minDaysLeft = Infinity;
+  for (const item of activeItems) {
+    if (item.fecha_entrega_orden) {
+      const delivery = new Date(item.fecha_entrega_orden); delivery.setHours(0, 0, 0, 0);
+      const daysLeft = Math.ceil((delivery - today) / 86400000);
+      if (daysLeft < minDaysLeft) minDaysLeft = daysLeft;
+    }
+  }
+  if (minDaysLeft <= SLA_DELIVERY_URGENT) return 'urgent';
+  if (minDaysLeft <= SLA_DELIVERY_ALERT)  return 'alert';
+
+  return 'ok';
+}
 
 export default function Dashboard() {
   const { data: tareas = [] } = useQuery({
     queryKey: ["tareas"],
     queryFn: () => Tarea.list("fecha_vencimiento"),
   });
-
-  const tareasPendientes = tareas.filter(t => t.estado === "pendiente");
-  const tareasAlejandro  = tareasPendientes.filter(t => t.asignado_a === "Alejandro").length;
-  const tareasSantiago   = tareasPendientes.filter(t => t.asignado_a === "Santiago").length;
-  const tareasAmbos      = tareasPendientes.filter(t => t.asignado_a === "Ambos").length;
-  const { data: orders = [] } = useQuery({
+  const { data: orders = [], isLoading: ordersLoading } = useQuery({
     queryKey: ["orders"],
     queryFn: () => base44.entities.Order.list("-created_date"),
+  });
+  const { data: allOrderItems = [], isLoading: itemsLoading } = useQuery({
+    queryKey: ["orderItems"],
+    queryFn: () => base44.entities.OrderItem.list(),
   });
   const { data: invoices = [] } = useQuery({
     queryKey: ["invoices"],
     queryFn: () => base44.entities.Invoice.list("-created_date"),
   });
 
-  const ordersInTransit = orders.filter(o => !["delivered"].includes(o.estado_actual)).length;
+  // ── Tareas KPI ───────────────────────────────────────────────────────────────
+  const tareasPendientes = tareas.filter(t => t.estado === "pendiente");
+  const tareasAlejandro  = tareasPendientes.filter(t => t.asignado_a === "Alejandro").length;
+  const tareasSantiago   = tareasPendientes.filter(t => t.asignado_a === "Santiago").length;
+  const tareasAmbos      = tareasPendientes.filter(t => t.asignado_a === "Ambos").length;
+
+  // ── Pedidos KPI — only computed once BOTH queries have resolved ──────────────
+  const kpiReady = !ordersLoading && !itemsLoading;
+  const isComplete = (orderId) => {
+    const items = allOrderItems.filter(i => i.pedido_id === orderId);
+    return items.length > 0 && items.every(i => i.estado === 'entregado');
+  };
+  const activeOrders  = kpiReady ? orders.filter(o => !o.archivado && !isComplete(o.id)) : [];
+  const pedidosLate   = activeOrders.filter(o => getOrderHealth(o, allOrderItems) === 'late').length;
+  const pedidosUrgent = activeOrders.filter(o => getOrderHealth(o, allOrderItems) === 'urgent').length;
+  const pedidosAlert  = activeOrders.filter(o => getOrderHealth(o, allOrderItems) === 'alert').length;
+  const pedidosOk     = activeOrders.filter(o => getOrderHealth(o, allOrderItems) === 'ok').length;
+
+  // ── Invoices KPI ──────────────────────────────────────────────────────────────
   const pendingInvoices = invoices.filter(i => i.estado !== "pagado").length;
   const totalRevenue = invoices.filter(i => i.estado === "pagado").reduce((sum, i) => sum + (i.monto_total || 0), 0);
 
@@ -80,8 +136,31 @@ export default function Dashboard() {
         </Card>
         <Card className="border-none shadow-lg bg-gradient-to-br from-purple-500 to-purple-600 text-white overflow-hidden relative">
           <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16" />
-          <CardHeader className="pb-3"><div className="flex items-center justify-between"><Package className="w-8 h-8" /><Truck className="w-5 h-5 opacity-70" /></div></CardHeader>
-          <CardContent><div className="text-3xl font-bold mb-1">{ordersInTransit}</div><p className="text-purple-100 text-sm">Pedidos en Tránsito</p></CardContent>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <Truck className="w-8 h-8" />
+              <Package className="w-5 h-5 opacity-70" />
+            </div>
+            <p className="text-purple-100 text-sm mt-1">Pedidos en Tránsito</p>
+          </CardHeader>
+          <CardContent className="pt-0 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-red-200 text-xs flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Atrasados</span>
+              <span className="text-xl font-bold">{kpiReady ? pedidosLate : '—'}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-orange-200 text-xs flex items-center gap-1"><Clock className="w-3 h-3" />Vencen &lt; 5 días</span>
+              <span className="text-xl font-bold">{kpiReady ? pedidosUrgent : '—'}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-yellow-200 text-xs flex items-center gap-1"><Clock className="w-3 h-3" />Vencen &lt; 10 días</span>
+              <span className="text-xl font-bold">{kpiReady ? pedidosAlert : '—'}</span>
+            </div>
+            <div className="flex items-center justify-between border-t border-purple-400/40 pt-1">
+              <span className="text-purple-200 text-xs">En Tiempo</span>
+              <span className="text-xl font-bold">{kpiReady ? pedidosOk : '—'}</span>
+            </div>
+          </CardContent>
         </Card>
         <Card className="border-none shadow-lg bg-gradient-to-br from-amber-500 to-amber-600 text-white overflow-hidden relative">
           <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16" />
