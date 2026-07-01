@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ArrowRight, Upload, ArrowLeft, Trash2, Pencil, Plus } from "lucide-react";
+import { ArrowRight, Upload, ArrowLeft, Trash2, Pencil, Plus, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { base44 } from "@/api/base44Client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -50,7 +50,7 @@ const STATUS_OPTIONS = [
   { value: "entregado",       label: "Entregado" },
 ];
 
-export default function OrderDetail({ order, orderItems, onEdit }) {
+export default function OrderDetail({ order, orderItems, onEdit, onClose }) {
   const queryClient = useQueryClient();
   const [editingItem, setEditingItem] = useState(null);
   const [formData, setFormData] = useState({});
@@ -147,11 +147,18 @@ export default function OrderDetail({ order, orderItems, onEdit }) {
       <CardHeader className="border-b border-slate-100 bg-gradient-to-r from-purple-50 to-indigo-50">
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg font-bold text-slate-900">Detalle del Pedido</CardTitle>
-          {onEdit && (
-            <Button size="sm" variant="outline" onClick={onEdit} className="border-purple-300 text-purple-700 hover:bg-purple-50">
-              <Pencil className="w-3 h-3 mr-1" />Editar
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {onEdit && (
+              <Button size="sm" variant="outline" onClick={onEdit} className="border-purple-300 text-purple-700 hover:bg-purple-50">
+                <Pencil className="w-3 h-3 mr-1" />Editar
+              </Button>
+            )}
+            {onClose && (
+              <Button size="sm" variant="ghost" onClick={onClose} className="text-slate-500 hover:text-slate-900 h-8 w-8 p-0">
+                <X className="w-4 h-4" />
+              </Button>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="p-6 space-y-4">

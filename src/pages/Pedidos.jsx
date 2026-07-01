@@ -228,47 +228,49 @@ export default function Pedidos() {
           </TabsTrigger>
         </TabsList>
         <TabsContent value="active">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              {showForm ? (
-                <OrderForm
-                  order={editingOrder}
-                  orderItems={editingOrder ? allOrderItems.filter(item => item.pedido_id === editingOrder.id) : null}
-                  products={products}
-                  onSubmit={handleSubmit}
-                  onCancel={() => { setShowForm(false); setEditingOrder(null); }}
-                  isLoading={createOrderMutation.isPending || createOrderItemsMutation.isPending || updateOrderMutation.isPending || updateOrderItemsMutation.isPending}
-                />
-              ) : (
-                <OrderList
-                  orders={activeOrders}
-                  orderItems={allOrderItems}
-                  isLoading={isLoading}
-                  onEdit={(order) => { setEditingOrder(order); setSelectedOrder(null); setShowForm(true); }}
-                  onDelete={(id) => { if (confirm("¿Estás seguro de eliminar este pedido y todos sus productos?")) deleteOrderMutation.mutate(id); }}
-                  onArchive={(id) => archiveOrderMutation.mutate(id)}
-                  onSelect={(order) => { setSelectedOrder(order); setShowForm(false); }}
-                  selectedOrder={selectedOrder}
-                  selectionMode={selectionMode}
-                  selectedIds={selectedIds}
-                  onToggleSelect={handleToggleSelect}
-                  onSelectAll={handleSelectAll}
-                  onBulkDelete={handleBulkDelete}
-                  onBulkArchive={handleBulkArchive}
-                  onToggleSelectionMode={handleToggleSelectionMode}
-                />
-              )}
-            </div>
-            <div className="lg:sticky lg:top-6 lg:self-start">
-              {selectedOrder && !selectionMode && (
-                <OrderDetail
-                  order={selectedOrder}
-                  orderItems={allOrderItems.filter(item => item.pedido_id === selectedOrder.id)}
-                  onEdit={() => { setEditingOrder(selectedOrder); setSelectedOrder(null); setShowForm(true); }}
-                />
-              )}
-            </div>
+          {/* Order list / form — pushes right when detail panel is open */}
+          <div className={`transition-all duration-300 ${selectedOrder && !selectionMode ? 'lg:mr-[420px]' : ''}`}>
+            {showForm ? (
+              <OrderForm
+                order={editingOrder}
+                orderItems={editingOrder ? allOrderItems.filter(item => item.pedido_id === editingOrder.id) : null}
+                products={products}
+                onSubmit={handleSubmit}
+                onCancel={() => { setShowForm(false); setEditingOrder(null); }}
+                isLoading={createOrderMutation.isPending || createOrderItemsMutation.isPending || updateOrderMutation.isPending || updateOrderItemsMutation.isPending}
+              />
+            ) : (
+              <OrderList
+                orders={activeOrders}
+                orderItems={allOrderItems}
+                isLoading={isLoading}
+                onEdit={(order) => { setEditingOrder(order); setSelectedOrder(null); setShowForm(true); }}
+                onDelete={(id) => { if (confirm("¿Estás seguro de eliminar este pedido y todos sus productos?")) deleteOrderMutation.mutate(id); }}
+                onArchive={(id) => archiveOrderMutation.mutate(id)}
+                onSelect={(order) => { setSelectedOrder(order); setShowForm(false); }}
+                selectedOrder={selectedOrder}
+                selectionMode={selectionMode}
+                selectedIds={selectedIds}
+                onToggleSelect={handleToggleSelect}
+                onSelectAll={handleSelectAll}
+                onBulkDelete={handleBulkDelete}
+                onBulkArchive={handleBulkArchive}
+                onToggleSelectionMode={handleToggleSelectionMode}
+              />
+            )}
           </div>
+
+          {/* Fixed side panel — always visible at current scroll position */}
+          {selectedOrder && !selectionMode && (
+            <div className="fixed top-0 right-0 h-screen w-[400px] bg-white border-l border-slate-200 shadow-2xl z-40 overflow-y-auto">
+              <OrderDetail
+                order={selectedOrder}
+                orderItems={allOrderItems.filter(item => item.pedido_id === selectedOrder.id)}
+                onEdit={() => { setEditingOrder(selectedOrder); setSelectedOrder(null); setShowForm(true); }}
+                onClose={() => setSelectedOrder(null)}
+              />
+            </div>
+          )}
         </TabsContent>
         <TabsContent value="completed">
           <CompletedOrders
