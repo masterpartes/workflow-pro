@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Trash2, Package, ChevronDown, ChevronRight, Calendar, Pencil, CheckSquare, Archive } from "lucide-react";
+import { Trash2, Package, ChevronDown, ChevronRight, Calendar, Pencil, CheckSquare, Archive, AlertTriangle, Clock, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const getStatusText = (status) => {
@@ -32,27 +32,69 @@ const getStatusColor = (status) => {
   return colorMap[status] || "bg-gray-100 text-gray-700";
 };
 
+// ── SLA health logic (mirrors Dashboard.jsx) ─────────────────────────────────
+function getOrderHealth(order, items) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const created = new Date(order.created_date); created.setHours(0, 0, 0, 0);
+  const daysSince = Math.floor((today - created) / 86400000);
+  const activeItems = items.filter(i => i.estado !== 'entregado');
+
+  if (activeItems.length === 0) return 'ok';
+
+  for (const item of activeItems) {
+    const s = item.estado;
+    if (s === 'adjudicado' && daysSince > 5)                                             return 'late';
+    if (['adjudicado','comprado'].includes(s) && daysSince > 10)                         return 'late';
+    if (['adjudicado','comprado','transito','en_aduana'].includes(s) && daysSince > 20)  return 'late';
+  }
+
+  let minDaysLeft = Infinity;
+  for (const item of activeItems) {
+    if (item.fecha_entrega_orden) {
+      const d = new Date(item.fecha_entrega_orden); d.setHours(0, 0, 0, 0);
+      const left = Math.ceil((d - today) / 86400000);
+      if (left < minDaysLeft) minDaysLeft = left;
+    }
+  }
+  if (minDaysLeft <= 5)  return 'urgent';
+  if (minDaysLeft <= 10) return 'alert';
+  return 'ok';
+}
+
+const HEALTH_CARD = {
+  late:   'border-purple-400 bg-purple-50',
+  urgent: 'border-orange-400 bg-orange-50',
+  alert:  'border-yellow-300 bg-yellow-50',
+  ok:     'border-green-300 bg-green-50',
+};
+
+const HEALTH_TEXT = {
+  late:   'text-purple-700',
+  urgent: 'text-orange-700',
+  alert:  'text-yellow-700',
+  ok:     'text-green-700',
+};
+
+function HealthBadge({ health }) {
+  const map = {
+    late:   { label: 'Atrasado',      cls: 'bg-purple-100 text-purple-700 border-purple-300', Icon: AlertTriangle },
+    urgent: { label: 'Vence < 5 días', cls: 'bg-orange-100 text-orange-700 border-orange-300', Icon: AlertTriangle },
+    alert:  { label: 'Vence < 10 días',cls: 'bg-yellow-100 text-yellow-700 border-yellow-300', Icon: Clock },
+    ok:     { label: 'En Tiempo',      cls: 'bg-green-100  text-green-700  border-green-300',  Icon: CheckCircle2 },
+  };
+  const { label, cls, Icon } = map[health] || map.ok;
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full border ${cls}`}>
+      <Icon className="w-3 h-3" />{label}
+    </span>
+  );
+}
+
 const getDaysUntilDelivery = (deliveryDate) => {
   if (!deliveryDate) return null;
-  const today = new Date();
-  const delivery = new Date(deliveryDate);
-  const diffTime = delivery - today;
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  return diffDays;
-};
-
-const getDeliveryColor = (days) => {
-  if (days === null) return "bg-slate-100";
-  if (days > 15) return "bg-green-100 border-green-300";
-  if (days >= 5) return "bg-orange-100 border-orange-300";
-  return "bg-purple-100 border-purple-300";
-};
-
-const getDeliveryTextColor = (days) => {
-  if (days === null) return "text-slate-700";
-  if (days > 15) return "text-green-700";
-  if (days >= 5) return "text-orange-700";
-  return "text-purple-700";
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const delivery = new Date(deliveryDate); delivery.setHours(0, 0, 0, 0);
+  return Math.ceil((delivery - today) / 86400000);
 };
 
 export default function OrderList({ orders, orderItems, isLoading, onEdit, onDelete, onSelect, selectedOrder, selectedIds = new Set(), onToggleSelect, onSelectAll, onBulkDelete, onBulkArchive, selectionMode, onToggleSelectionMode }) {
@@ -164,11 +206,17 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
               const items = getOrderItems(order.id);
               const earliestDelivery = getEarliestDeliveryDate(order.id);
               const daysUntilDelivery = getDaysUntilDelivery(earliestDelivery);
+              const health = getOrderHealth(order, items);
               const isExpanded = expandedOrders[order.id];
               const isSelected = selectedOrder?.id === order.id;
               const isChecked = selectedIds.has(order.id);
+              const cardClass = isChecked
+                ? 'border-purple-500 bg-purple-50'
+                : isSelected
+                  ? `border-purple-500 shadow-md ${HEALTH_CARD[health]}`
+                  : HEALTH_CARD[health];
               return (
-                <div key={order.id} className={`border-2 rounded-xl transition-all ${isChecked ? 'border-purple-500 bg-purple-50' : isSelected ? 'border-purple-500 shadow-md' : 'border-slate-200'} ${!isChecked ? getDeliveryColor(daysUntilDelivery) : ''}`}>
+                <div key={order.id} className={`border-2 rounded-xl transition-all ${cardClass}`}>
                   <div onClick={() => selectionMode ? onToggleSelect(order.id) : onSelect(order)} className="p-4 cursor-pointer">
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-start gap-3 flex-1">
@@ -181,13 +229,14 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
                           />
                         )}
                         <div className="flex-1">
-                          <div className="flex items-center gap-3 mb-2">
+                          <div className="flex items-center gap-3 mb-2 flex-wrap">
                             <h3 className="font-bold text-slate-900">{order.numero_pedido}</h3>
                             <Badge variant="outline" className="text-xs">{items.length} producto{items.length !== 1 ? 's' : ''}</Badge>
+                            <HealthBadge health={health} />
                           </div>
                           <p className="text-sm text-slate-600 mb-1">Cliente: {order.cliente}</p>
                           {earliestDelivery && (
-                            <div className={`flex items-center gap-2 text-sm font-semibold ${getDeliveryTextColor(daysUntilDelivery)}`}>
+                            <div className={`flex items-center gap-2 text-sm font-semibold ${HEALTH_TEXT[health]}`}>
                               <Calendar className="w-4 h-4" />
                               <span>Entrega: {new Date(earliestDelivery).toLocaleDateString('es-EC')} {daysUntilDelivery !== null && `(${daysUntilDelivery > 0 ? daysUntilDelivery + ' días' : 'Vencido'})`}</span>
                             </div>
