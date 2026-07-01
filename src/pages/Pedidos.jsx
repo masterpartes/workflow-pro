@@ -250,7 +250,7 @@ export default function Pedidos() {
                 />
               )}
             </div>
-            <div>
+            <div className="lg:sticky lg:top-6 lg:self-start">
               {selectedOrder && !selectionMode && (
                 <OrderDetail
                   order={selectedOrder}
