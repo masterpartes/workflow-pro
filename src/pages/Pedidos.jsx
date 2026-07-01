@@ -149,9 +149,18 @@ export default function Pedidos() {
   // - fecha_entrega_orden must be null (not "") when not set
   const sanitizeItems = (rawItems) => rawItems.map(item => ({
     ...item,
-    producto_id: item.producto_id || null,
-    fecha_entrega_orden: item.fecha_entrega_orden || null,
-    estado: item.estado || 'adjudicado',
+    producto_id:        item.producto_id || null,
+    fecha_entrega_orden:item.fecha_entrega_orden || null,
+    estado:             item.estado || 'adjudicado',
+    // logistics — empty strings must become null for date/text columns
+    fecha_compra:       item.fecha_compra   || null,
+    fecha_miami:        item.fecha_miami    || null,
+    fecha_aduana:       item.fecha_aduana   || null,
+    fecha_entrega:      item.fecha_entrega  || null,
+    tracking_number:    item.tracking_number || null,
+    wr_bodega:          item.wr_bodega       || null,
+    awb:                item.awb             || null,
+    numero_guia:        item.numero_guia     || null,
   }));
 
   const handleSubmit = async (orderData, items) => {
