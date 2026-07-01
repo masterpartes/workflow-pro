@@ -106,17 +106,27 @@ export default function Pedidos() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["orders"] }),
   });
 
+  // Sanitize items before sending to Supabase:
+  // - producto_id must be null (not "") when not linked to a product
+  // - fecha_entrega_orden must be null (not "") when not set
+  const sanitizeItems = (rawItems) => rawItems.map(item => ({
+    ...item,
+    producto_id: item.producto_id || null,
+    fecha_entrega_orden: item.fecha_entrega_orden || null,
+    estado: item.estado || 'adjudicado',
+  }));
+
   const handleSubmit = async (orderData, items) => {
     if (editingOrder) {
       await updateOrderMutation.mutateAsync({ id: editingOrder.id, data: orderData });
       const existingItems = allOrderItems.filter(item => item.pedido_id === editingOrder.id);
-      const itemsToUpdate = items.filter(item => item.id).map(item => ({ ...item, pedido_id: editingOrder.id, pedido_numero: orderData.numero_pedido }));
-      const itemsToCreate = items.filter(item => !item.id).map(item => ({ ...item, pedido_id: editingOrder.id, pedido_numero: orderData.numero_pedido }));
+      const itemsToUpdate = sanitizeItems(items.filter(item => item.id)).map(item => ({ ...item, pedido_id: editingOrder.id, pedido_numero: orderData.numero_pedido }));
+      const itemsToCreate = sanitizeItems(items.filter(item => !item.id)).map(item => ({ ...item, pedido_id: editingOrder.id, pedido_numero: orderData.numero_pedido }));
       const itemsToDelete = existingItems.filter(existingItem => !items.find(item => item.id === existingItem.id)).map(item => item.id);
       await updateOrderItemsMutation.mutateAsync({ itemsToUpdate, itemsToCreate, itemsToDelete });
     } else {
       const order = await createOrderMutation.mutateAsync(orderData);
-      const itemsWithOrderId = items.map(item => ({ ...item, pedido_id: order.id, pedido_numero: orderData.numero_pedido }));
+      const itemsWithOrderId = sanitizeItems(items).map(item => ({ ...item, pedido_id: order.id, pedido_numero: orderData.numero_pedido }));
       await createOrderItemsMutation.mutateAsync(itemsWithOrderId);
     }
   };
