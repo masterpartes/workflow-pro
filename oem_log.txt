@@ -1,0 +1,19 @@
+Reading cotizacion_bulk.xlsm...
+1 auction(s) found:
+   [1] COT 5489 | VIN 1C6RRFFG6NN395906 | mopar | 3 unpriced
+
+Fetching 3 part(s)...
+
+-- COT 5489 | 1C6RRFFG6NN395906 | https://mopar.oempartsonline.com --
+  [1/3] 68404445AB  PARACHOQUES TRA.
+    TIMEOUT
+     MSRP:          -  Precio:          -  Fits: N/A
+  [2/3] 68299104AE  REC.PARACHOQUES TRA.
+    TIMEOUT
+     MSRP:          -  Precio:          -  Fits: N/A
+  [3/3] 68309767AA  SOP.PARACHOQUES TR.
+    TIMEOUT
+     MSRP:          -  Precio:          -  Fits: N/A
+
+Done. Results written to oem_results_temp.csv
+Switch back to Excel - the macro will fill in the cells.

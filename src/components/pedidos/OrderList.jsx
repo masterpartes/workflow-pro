@@ -3,8 +3,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Package, ChevronDown, ChevronRight, Calendar, Pencil, CheckSquare, Archive, AlertTriangle, Clock, CheckCircle2 } from "lucide-react";
+import { Package, ChevronDown, ChevronRight, Calendar, CheckSquare, Archive, AlertTriangle, Clock, CheckCircle2, Search, X, Trash2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 function ActionSelect({ orderId, onEdit, onArchive, onDelete }) {
@@ -56,21 +57,12 @@ const getStatusColor = (status) => {
 };
 
 // ── SLA health logic (mirrors Dashboard.jsx) ─────────────────────────────────
+// late = delivery date passed, urgent = ≤5 days, alert = ≤10 days, ok = >10 days
 function getOrderHealth(order, items) {
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const created = new Date(order.created_date); created.setHours(0, 0, 0, 0);
-  const daysSince = Math.floor((today - created) / 86400000);
   const activeItems = items.filter(i => i.estado !== 'entregado');
-
   if (activeItems.length === 0) return 'ok';
 
-  for (const item of activeItems) {
-    const s = item.estado;
-    if (s === 'adjudicado' && daysSince > 5)                                             return 'late';
-    if (['adjudicado','comprado'].includes(s) && daysSince > 10)                         return 'late';
-    if (['adjudicado','comprado','transito','en_aduana'].includes(s) && daysSince > 20)  return 'late';
-  }
-
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   let minDaysLeft = Infinity;
   for (const item of activeItems) {
     if (item.fecha_entrega_orden) {
@@ -79,6 +71,7 @@ function getOrderHealth(order, items) {
       if (left < minDaysLeft) minDaysLeft = left;
     }
   }
+  if (minDaysLeft < 0)   return 'late';
   if (minDaysLeft <= 5)  return 'urgent';
   if (minDaysLeft <= 10) return 'alert';
   return 'ok';
@@ -120,8 +113,18 @@ const getDaysUntilDelivery = (deliveryDate) => {
   return Math.ceil((delivery - today) / 86400000);
 };
 
+const HEALTH_FILTERS = [
+  { value: 'all',    label: 'Todos' },
+  { value: 'late',   label: 'Atrasados' },
+  { value: 'urgent', label: 'Vence < 5d' },
+  { value: 'alert',  label: 'Vence < 10d' },
+  { value: 'ok',     label: 'En Tiempo' },
+];
+
 export default function OrderList({ orders, orderItems, isLoading, onEdit, onDelete, onArchive, onSelect, selectedOrder, selectedIds = new Set(), onToggleSelect, onSelectAll, onBulkDelete, onBulkArchive, selectionMode, onToggleSelectionMode }) {
   const [expandedOrders, setExpandedOrders] = useState({});
+  const [search, setSearch] = useState('');
+  const [healthFilter, setHealthFilter] = useState('all');
 
   const toggleExpand = (orderId) => {
     setExpandedOrders(prev => ({ ...prev, [orderId]: !prev[orderId] }));
@@ -141,7 +144,23 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
     return items.every(item => item.estado === 'entregado');
   };
 
-  const activeOrders = orders.filter(order => !isOrderComplete(order.id));
+  const allActive = orders.filter(order => !isOrderComplete(order.id));
+
+  // Apply search (placa, numero_pedido, cliente) + health filter
+  const activeOrders = allActive.filter(order => {
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      const hit = (order.placa || '').toLowerCase().includes(q)
+        || (order.numero_pedido || '').toLowerCase().includes(q)
+        || (order.cliente || '').toLowerCase().includes(q);
+      if (!hit) return false;
+    }
+    if (healthFilter !== 'all') {
+      const items = getOrderItems(order.id);
+      if (getOrderHealth(order, items) !== healthFilter) return false;
+    }
+    return true;
+  });
 
   if (isLoading) {
     return (
@@ -169,7 +188,8 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
 
   return (
     <Card className="border-none shadow-lg">
-      <CardHeader className="border-b border-slate-100">
+      <CardHeader className="border-b border-slate-100 space-y-3">
+        {/* Title row */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             {selectionMode && (
@@ -179,7 +199,12 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
                 className="h-5 w-5"
               />
             )}
-            <CardTitle className="text-lg font-bold text-slate-900">Pedidos en Curso</CardTitle>
+            <CardTitle className="text-lg font-bold text-slate-900">
+              Pedidos en Curso
+              {(search || healthFilter !== 'all') && (
+                <span className="ml-2 text-sm font-normal text-slate-500">({activeOrders.length} resultado{activeOrders.length !== 1 ? 's' : ''})</span>
+              )}
+            </CardTitle>
           </div>
           <Button
             variant={selectionMode ? "default" : "outline"}
@@ -191,6 +216,41 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
             {selectionMode ? "Cancelar" : "Seleccionar"}
           </Button>
         </div>
+
+        {/* Search + health filter row */}
+        {!selectionMode && (
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Input
+                placeholder="Buscar por PLACA, número o cliente…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="pl-9 h-9 text-sm"
+              />
+              {search && (
+                <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            <div className="flex gap-1 flex-wrap">
+              {HEALTH_FILTERS.map(f => (
+                <button
+                  key={f.value}
+                  onClick={() => setHealthFilter(f.value)}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                    healthFilter === f.value
+                      ? 'bg-purple-600 text-white border-purple-600'
+                      : 'bg-white text-slate-600 border-slate-300 hover:border-purple-400 hover:text-purple-600'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {selectionMode && someSelected && (
           <div className="mt-3 flex items-center gap-3 p-3 bg-purple-50 rounded-lg border border-purple-200">
@@ -254,6 +314,9 @@ export default function OrderList({ orders, orderItems, isLoading, onEdit, onDel
                         <div className="flex-1">
                           <div className="flex items-center gap-3 mb-2 flex-wrap">
                             <h3 className="font-bold text-slate-900">{order.numero_pedido}</h3>
+                            {order.placa && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-800 text-white text-xs font-mono tracking-widest">{order.placa}</span>
+                            )}
                             <Badge variant="outline" className="text-xs">{items.length} producto{items.length !== 1 ? 's' : ''}</Badge>
                             <HealthBadge health={health} />
                           </div>

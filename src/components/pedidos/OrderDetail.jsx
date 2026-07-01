@@ -163,7 +163,12 @@ export default function OrderDetail({ order, orderItems, onEdit, onClose }) {
       </CardHeader>
       <CardContent className="p-6 space-y-4">
         <div>
-          <h3 className="font-bold text-xl text-slate-900 mb-1">{order.numero_pedido}</h3>
+          <div className="flex items-center gap-3 mb-1 flex-wrap">
+            <h3 className="font-bold text-xl text-slate-900">{order.numero_pedido}</h3>
+            {order.placa && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-800 text-white text-xs font-mono tracking-widest">{order.placa}</span>
+            )}
+          </div>
           <p className="text-sm text-slate-600">Cliente: {order.cliente}</p>
         </div>
         <div className="border-t pt-4">

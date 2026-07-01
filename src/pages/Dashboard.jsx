@@ -17,23 +17,15 @@ const SLA_DELIVERY_URGENT = 5;   // days remaining to delivery → urgent
 const SLA_DELIVERY_ALERT  = 10;  // days remaining to delivery → alert
 
 // Returns: 'late' | 'urgent' | 'alert' | 'ok'
+// late   = delivery date already passed
+// urgent = ≤ 5 days to delivery
+// alert  = ≤ 10 days to delivery
+// ok     = > 10 days (or no delivery date set)
 function getOrderHealth(order, items) {
   const activeItems = items.filter(i => i.pedido_id === order.id && i.estado !== 'entregado');
   if (activeItems.length === 0) return 'ok';
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const created = new Date(order.created_date); created.setHours(0, 0, 0, 0);
-  const daysSince = Math.floor((today - created) / 86400000);
-
-  // SLA process violations (highest priority)
-  for (const item of activeItems) {
-    const s = item.estado;
-    if (s === 'adjudicado' && daysSince > SLA_PURCHASE)                                           return 'late';
-    if (['adjudicado','comprado'].includes(s) && daysSince > SLA_SHIPMENT)                        return 'late';
-    if (['adjudicado','comprado','transito','en_aduana'].includes(s) && daysSince > SLA_WAREHOUSE) return 'late';
-  }
-
-  // Delivery date proximity
   let minDaysLeft = Infinity;
   for (const item of activeItems) {
     if (item.fecha_entrega_orden) {
@@ -42,9 +34,10 @@ function getOrderHealth(order, items) {
       if (daysLeft < minDaysLeft) minDaysLeft = daysLeft;
     }
   }
+
+  if (minDaysLeft < 0)                    return 'late';
   if (minDaysLeft <= SLA_DELIVERY_URGENT) return 'urgent';
   if (minDaysLeft <= SLA_DELIVERY_ALERT)  return 'alert';
-
   return 'ok';
 }
 

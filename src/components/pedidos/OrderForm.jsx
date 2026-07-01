@@ -46,6 +46,7 @@ export default function OrderForm({ order, orderItems, products, onSubmit, onCan
   const [orderData, setOrderData] = useState(order || {
     numero_pedido: "",
     cliente: "",
+    placa: "",
     fecha_pedido: new Date().toISOString().split('T')[0],
     notas: "",
   });
@@ -132,6 +133,16 @@ export default function OrderForm({ order, orderItems, products, onSubmit, onCan
                 onChange={e => handleOrderChange("cliente", e.target.value)}
                 required
                 placeholder="Nombre del cliente"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="placa">PLACA</Label>
+              <Input
+                id="placa"
+                value={orderData.placa || ""}
+                onChange={e => handleOrderChange("placa", e.target.value.toUpperCase())}
+                placeholder="ej. PCM7618"
+                className="font-mono tracking-widest"
               />
             </div>
             <div className="space-y-2">

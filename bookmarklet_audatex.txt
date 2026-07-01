@@ -1,0 +1,23 @@
+============================================================
+BOOKMARKLET — MASTERPARTES / AUDATEX EXTRACTOR
+============================================================
+
+INSTALACIÓN (una sola vez):
+1. Muestra la barra de favoritos en Chrome (Ctrl+Shift+B)
+2. Clic derecho en la barra → "Agregar página..."
+3. Nombre: "MP Extraer Cotización"
+4. URL: copia TODO el bloque javascript:(...) de abajo
+5. Guardar
+
+USO:
+1. Abre la cotización en Audatex (página frmQuotationSupplierAnswer)
+2. Haz clic en el favorito "MP Extraer Cotización"
+3. Aparece alerta confirmando cuántas piezas se copiaron
+4. Ve a Excel → haz clic en el botón "Importar Cotización"
+
+============================================================
+CÓDIGO DEL BOOKMARKLET (copiar todo, desde javascript: hasta el final):
+============================================================
+
+javascript:(function(){'use strict';function gs(s){var e=document.querySelectorAll('span[id$="_'+s+'"]');return e.length?e[0].textContent.trim():'';}var hdr='HEADER\nCOTIZACION:'+gs('lblQuotationNumber')+'\nSINIESTRO:'+gs('lblClaimNumber')+'\nASEGURADORA:'+gs('lblInsurerName')+'\nVALUADOR:'+gs('lblNameEvaluator')+'\nMATRICULA:'+gs('lblLicensePlate')+'\nCHASIS:'+gs('lblVIN')+'\nANIO:'+gs('lblYearModel')+'\nTALLER:'+gs('lblBodyshop');var base='ctl00_cphBody_tbcAnswerQuotation_tabItems_ucQuotationSupplierAnswerItems_dtlAnswerPendingItem_';var lines=[];for(var i=0;i<99;i++){var pfx=base+'ctl'+(i<10?'0'+i:''+i)+'_';var pn=document.getElementById(pfx+'lblPartNumber');if(!pn)break;var desc=document.getElementById(pfx+'lblPartDescription');lines.push(pn.textContent.trim()+'\t'+(desc?desc.textContent.trim():''));}var txt=hdr+'\nPARTES\n'+lines.join('\n');function done(){alert('✓ '+lines.length+' pieza(s) copiadas al portapapeles.\nVe a Excel → clic en "Importar Cotización".');}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done).catch(function(){var t=document.createElement('textarea');t.value=txt;document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);done();});}else{var t=document.createElement('textarea');t.value=txt;document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);done();}})();
+
