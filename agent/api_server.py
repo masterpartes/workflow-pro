@@ -285,6 +285,26 @@ async def inpart_diagnose():
     return result
 
 
+@app.post("/inpart/search-raw", dependencies=[Depends(verify_api_key)])
+async def inpart_search_raw(days_back: int = 7):
+    """
+    Debug endpoint: runs only get_pending_quotations (no detail fetching).
+    Returns the raw list of quotations parsed from the search table so we can
+    isolate whether count=0 comes from the table parser or from detail fetching.
+    """
+    try:
+        quotations = await scrape_pending_quotations(
+            days_back=days_back,
+            fetch_details=False,
+            debug=True,
+            headless=True,
+        )
+        return {"count": len(quotations), "quotations": quotations}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+
 # ── eBay marketplace account deletion webhook ─────────────────────────────────
 # Required for eBay production API compliance.
 # eBay sends a GET with ?challenge_code=xxx for verification,
