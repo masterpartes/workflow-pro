@@ -460,6 +460,31 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
         await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
         await page.wait_for_timeout(2000)
 
+        # Set a wide date range so older quotations are findable.
+        # The page default is only ~2 days, which excludes quotations from earlier weeks.
+        _date_from = (datetime.now() - timedelta(days=90)).strftime("%d/%m/%Y")
+        _date_to   = datetime.now().strftime("%d/%m/%Y")
+        await page.evaluate(f"""
+            () => {{
+                const allInputs = [...document.querySelectorAll('input[type="text"]')];
+                let dateInputs = allInputs.filter(el =>
+                    /\\d{{2}}\\/\\d{{2}}\\/\\d{{4}}/.test(el.value) ||
+                    el.id.toLowerCase().includes('fecha') ||
+                    el.name.toLowerCase().includes('fecha')
+                );
+                if (dateInputs.length < 2) dateInputs = allInputs.slice(0, 2);
+                function setVal(el, val) {{
+                    if (!el) return;
+                    el.readOnly = false; el.value = val;
+                    ['input','change','blur'].forEach(e =>
+                        el.dispatchEvent(new Event(e, {{bubbles: true}})));
+                }}
+                if (dateInputs[0]) setVal(dateInputs[0], '{_date_from}');
+                if (dateInputs[1]) setVal(dateInputs[1], '{_date_to}');
+            }}
+        """)
+        await page.wait_for_timeout(500)
+
         # Fill cotizacion number filter
         try:
             cot_input = page.locator(
@@ -481,38 +506,40 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
             print(f"[inpart] WARNING: Buscar click failed: {e}")
         await page.wait_for_timeout(3000)
 
-        # Log every image button on the page so Railway logs show us exactly
-        # which buttons exist and what their onclick/name/id looks like.
+        # Log image buttons so Railway logs confirm which button gets clicked
         btn_info = await page.evaluate("""
             () => Array.from(document.querySelectorAll('input[type="image"]')).map(b => ({
                 id:      b.id,
                 name:    b.name,
                 title:   b.title,
-                onclick: (b.getAttribute('onclick') || '').slice(0, 200),
-                src:     (b.src || '').split('/').pop(),
-                inTable: !!b.closest('table[id]'),
                 tableId: (b.closest('table[id]') || {}).id || null,
             }))
         """)
-        print(f"[inpart] Image buttons after search: {btn_info}")
+        print(f"[inpart] Image buttons after search (COT {cotizacion_id}): {btn_info}")
 
-        # Prefer a button that lives inside the GridView table (data row),
-        # not a form/header button like Buscar or Clear.
+        # Click the Visualizar button — must be inside the GridView, not a form button.
+        # If not found, bail rather than clicking a random button.
         visualizar = page.locator(
             "table[id*='GridView'] input[type='image'], "
             "table[id*='gridview'] input[type='image'], "
             "table[id*='Grid'] input[type='image']"
         ).first
         if await visualizar.count() == 0:
-            # Fallback: any image button whose id/name suggests it is Visualizar
+            # Try by id/name/title in case the table id doesn't contain "Grid"
             visualizar = page.locator(
                 "input[type='image'][id*='Visual' i], "
                 "input[type='image'][name*='Visual' i], "
                 "input[type='image'][title*='isualiz' i]"
             ).first
         if await visualizar.count() == 0:
-            # Last resort: first image button on page
-            visualizar = page.locator("input[type='image']").first
+            print(f"[inpart] WARNING: no Visualizar button found for COT {cotizacion_id} — skipping detail")
+            return {
+                "cotizacion_id": cotizacion_id,
+                "detail_url": "no_visualizar_button",
+                "vin": None, "matricula": None, "siniestro": None,
+                "aseguradora": None, "taller": None, "armadora": None,
+                "ano_modelo": None, "partes": [],
+            }
 
         # Use expect_navigation — the click does a same-window __doPostBack
         print(f"[inpart] Clicking Visualizar for COT {cotizacion_id}, URL before: {page.url}")
@@ -524,7 +551,6 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
             await page.wait_for_timeout(1500)
         except Exception as nav_err:
             print(f"[inpart] WARNING: Visualizar navigation error: {nav_err}")
-            # Navigation may have already completed — check URL
             await page.wait_for_timeout(2000)
 
         print(f"[inpart] URL after Visualizar click: {page.url}")
