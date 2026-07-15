@@ -163,6 +163,12 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
     Returns list of dicts with keys:
       aseguradora, cotizacion_id, taller, poliza, siniestro,
       matricula, armadora, fecha, pendientes
+
+    Fixes vs original:
+    - Dates set via JavaScript (handles readonly ASP.NET calendar pickers)
+    - Results table found by <th> content ("Cotización"), not by row count
+      (the page layout tables have more rows than the 1-2 row results GridView)
+    - Table fully parsed in JS for speed and reliability
     """
     print(f"[inpart] Fetching pending quotations (last {days_back} days)…")
     await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
@@ -174,30 +180,58 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
 
     date_from = (datetime.now() - timedelta(days=days_back)).strftime("%d/%m/%Y")
     date_to   = datetime.now().strftime("%d/%m/%Y")
+    print(f"[inpart] Date range: {date_from} → {date_to}")
 
-    # ── Fill date range ────────────────────────────────────────────────────
-    # "Fecha Desde" is the first date text input on the form
-    try:
-        date_inputs = page.locator("input[type='text'][id*='Fecha' i], input[type='text'][name*='Fecha' i]")
-        count = await date_inputs.count()
-        if count >= 1:
-            await date_inputs.nth(0).triple_click()
-            await date_inputs.nth(0).fill(date_from)
-        if count >= 2:
-            await date_inputs.nth(1).triple_click()
-            await date_inputs.nth(1).fill(date_to)
-        else:
-            # Fall back: fill first two text inputs on the page
-            all_text = page.locator("input[type='text']")
-            n = await all_text.count()
-            if n >= 1:
-                await all_text.nth(0).triple_click()
-                await all_text.nth(0).fill(date_from)
-            if n >= 2:
-                await all_text.nth(1).triple_click()
-                await all_text.nth(1).fill(date_to)
-    except Exception as e:
-        print(f"[inpart] WARNING: could not fill dates: {e}")
+    # ── Fill dates via JavaScript ──────────────────────────────────────────
+    # ASP.NET calendar picker inputs are often readonly; .fill() is silently
+    # ignored on them.  We remove readonly, set the value, and fire all events.
+    date_fill_result = await page.evaluate(f"""
+        () => {{
+            const allInputs = [...document.querySelectorAll('input[type="text"]')];
+
+            // Priority 1: inputs whose id/name contains 'fecha' (case-insensitive)
+            let dateInputs = allInputs.filter(el =>
+                el.id.toLowerCase().includes('fecha') ||
+                el.name.toLowerCase().includes('fecha')
+            );
+
+            // Priority 2: inputs that already hold a dd/mm/yyyy value
+            if (dateInputs.length < 2) {{
+                dateInputs = allInputs.filter(el =>
+                    /\d{{2}}\/\d{{2}}\/\d{{4}}/.test(el.value)
+                );
+            }}
+
+            // Priority 3: first two text inputs on the form
+            if (dateInputs.length < 2) {{
+                dateInputs = allInputs.slice(0, 2);
+            }}
+
+            function setVal(el, val) {{
+                if (!el) return false;
+                const wasReadonly = el.readOnly;
+                el.readOnly = false;
+                el.value = val;
+                ['input', 'change', 'blur'].forEach(evt =>
+                    el.dispatchEvent(new Event(evt, {{bubbles: true}}))
+                );
+                if (wasReadonly) el.readOnly = true;
+                return true;
+            }}
+
+            const r = {{
+                found: dateInputs.length,
+                ids: dateInputs.slice(0, 2).map(e => e.id || e.name || '?'),
+                from: false,
+                to:   false,
+            }};
+            if (dateInputs.length >= 1) r.from = setVal(dateInputs[0], '{date_from}');
+            if (dateInputs.length >= 2) r.to   = setVal(dateInputs[1], '{date_to}');
+            return r;
+        }}
+    """)
+    print(f"[inpart] Date fill: {date_fill_result}")
+    await page.wait_for_timeout(500)
 
     # ── Set Status = Pendiente ─────────────────────────────────────────────
     try:
@@ -210,7 +244,7 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
             for opt in options:
                 if "pendiente" in opt.get("t", "").lower():
                     await selects.nth(i).select_option(value=opt["v"])
-                    print(f"[inpart] Set status filter to: {opt['t']}")
+                    print(f"[inpart] Status filter → {opt['t']}")
                     break
     except Exception as e:
         print(f"[inpart] WARNING: could not set status filter: {e}")
@@ -234,98 +268,99 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
     # ── Check for "period exceeded" error ─────────────────────────────────
     body = await page.inner_text("body")
     if "período excedido" in body.lower() or "periodo excedido" in body.lower():
-        print("[inpart] WARNING: Date range too wide — retrying with 7 days max…")
+        print("[inpart] WARNING: Date range too wide — retrying with 7 days…")
         return await get_pending_quotations(page, days_back=7, debug=debug)
 
-    # ── Parse results table ────────────────────────────────────────────────
-    # The results are in a GridView / HTML table. We find all tables and pick
-    # the one with the most rows that looks like quotation data.
-    quotations = []
+    # ── Parse results table via JavaScript ────────────────────────────────
+    # BUG in original: picking the table with the most rows chose a layout
+    # table (many rows) instead of the 2-row GridView results table.
+    # FIX: find the table that has a <th> containing "cotizaci".
+    result = await page.evaluate("""
+        () => {
+            // Find the GridView results table by its <th> content
+            let resultsTable = null;
+            for (const tbl of document.querySelectorAll('table')) {
+                const ths = [...tbl.querySelectorAll('th')];
+                if (ths.some(th => th.innerText.toLowerCase().includes('cotizaci'))) {
+                    resultsTable = tbl;
+                    break;
+                }
+            }
 
-    tables = page.locator("table")
-    ntables = await tables.count()
+            if (!resultsTable) {
+                return {error: 'no_results_table', quotations: [], headers: []};
+            }
 
-    best_table = None
-    best_rows  = 0
+            // Header row
+            const headerRow = resultsTable.querySelector('tr');
+            if (!headerRow) return {error: 'no_header_row', quotations: [], headers: []};
 
-    for ti in range(ntables):
-        rows = tables.nth(ti).locator("tr")
-        n = await rows.count()
-        if n > best_rows:
-            best_rows  = n
-            best_table = tables.nth(ti)
+            const headerCells = [...headerRow.querySelectorAll('th, td')];
+            const headers = headerCells.map(c => c.innerText.trim().toLowerCase());
 
-    if best_table is None or best_rows < 2:
-        print("[inpart] No results table found.")
+            const fi = (keywords) => headers.findIndex(h =>
+                keywords.some(kw => h.includes(kw))
+            );
+
+            const idx = {
+                cot:        fi(['cotizaci']),
+                aseg:       fi(['origen', 'aseg', 'compañ']),
+                taller:     fi(['taller']),
+                poliza:     fi(['póliza', 'poliza', 'documento']),
+                siniestro:  fi(['siniestro']),
+                matricula:  fi(['matr', 'placa']),
+                armadora:   fi(['armadora', 'marca']),
+                fecha:      fi(['fecha']),
+                pendientes: fi(['pendiente']),
+            };
+
+            const quotations = [];
+            const rows = [...resultsTable.querySelectorAll('tr')].slice(1);
+
+            for (const row of rows) {
+                const cells = [...row.querySelectorAll('td')];
+                if (cells.length < 3) continue;
+
+                const g = (i) => (i >= 0 && i < cells.length)
+                    ? cells[i].innerText.trim() : '';
+
+                const cotId = g(idx.cot);
+                if (!cotId || !/\d{3,}/.test(cotId)) continue;
+
+                const m = cotId.match(/\d+/);
+                if (!m) continue;
+
+                quotations.push({
+                    cotizacion_id: m[0],
+                    aseguradora:   g(idx.aseg),
+                    taller:        g(idx.taller),
+                    poliza:        g(idx.poliza),
+                    siniestro:     g(idx.siniestro),
+                    matricula:     g(idx.matricula),
+                    armadora:      g(idx.armadora),
+                    fecha:         g(idx.fecha),
+                    pendientes:    g(idx.pendientes),
+                });
+            }
+
+            return {error: null, headers, idx, quotations};
+        }
+    """)
+
+    if result.get("error"):
+        print(f"[inpart] Table parse error: {result['error']}")
+        # Log body snippet for debugging
+        snippet = body[:500].replace('\n', ' ')
+        print(f"[inpart] Page body snippet: {snippet}")
         return []
 
-    # Detect header row to understand column order
-    header_row = best_table.locator("tr").nth(0)
-    headers = []
-    header_cells = header_row.locator("th, td")
-    nh = await header_cells.count()
-    for i in range(nh):
-        txt = (await header_cells.nth(i).inner_text()).strip().lower()
-        headers.append(txt)
+    print(f"[inpart] Table headers found: {result.get('headers')}")
+    print(f"[inpart] Column indexes: {result.get('idx')}")
 
-    print(f"[inpart] Table headers: {headers}")
-
-    # Map header text → column index (flexible matching)
-    def col(keywords):
-        for kw in keywords:
-            for i, h in enumerate(headers):
-                if kw in h:
-                    return i
-        return None
-
-    idx_cot        = col(["cotizaci"])         # "Cotización"
-    idx_aseg       = col(["origen", "aseg", "compañ"])
-    idx_taller     = col(["taller"])
-    idx_poliza     = col(["póliza", "poliza", "documento"])
-    idx_siniestro  = col(["siniestro"])
-    idx_matricula  = col(["matrícula", "matricula", "placa"])
-    idx_armadora   = col(["armadora", "marca"])
-    idx_fecha      = col(["fecha"])
-    idx_pendientes = col(["pendiente"])
-
-    print(f"[inpart] Column map: cot={idx_cot}, aseg={idx_aseg}, taller={idx_taller}, "
-          f"matricula={idx_matricula}, pendientes={idx_pendientes}")
-
-    rows = best_table.locator("tr")
-    nrows = await rows.count()
-
-    for ri in range(1, nrows):
-        row = rows.nth(ri)
-        cells = row.locator("td")
-        nc = await cells.count()
-        if nc < 3:
-            continue
-
-        async def cell_text(idx):
-            if idx is None or idx >= nc:
-                return ""
-            return (await cells.nth(idx).inner_text()).strip()
-
-        cot_id = await cell_text(idx_cot)
-
-        # Skip rows without a numeric quotation ID
-        if not cot_id or not re.search(r'\d{3,}', cot_id):
-            continue
-
-        q = {
-            "cotizacion_id": re.search(r'\d+', cot_id).group(0),
-            "aseguradora":   await cell_text(idx_aseg),
-            "taller":        await cell_text(idx_taller),
-            "poliza":        await cell_text(idx_poliza),
-            "siniestro":     await cell_text(idx_siniestro),
-            "matricula":     await cell_text(idx_matricula),
-            "armadora":      await cell_text(idx_armadora),
-            "fecha":         await cell_text(idx_fecha),
-            "pendientes":    await cell_text(idx_pendientes),
-            # detail will be filled by get_quotation_detail()
-            "vin":           None,
-            "partes":        [],
-        }
+    quotations = []
+    for q in result.get("quotations", []):
+        q["vin"]   = None
+        q["partes"] = []
         quotations.append(q)
         print(f"[inpart]   → COT {q['cotizacion_id']} | {q['aseguradora']} | "
               f"{q['matricula']} | {q['pendientes']} piezas pendientes")
