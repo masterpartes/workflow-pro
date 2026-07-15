@@ -123,24 +123,36 @@ async def login(page, debug=False) -> bool:
         await _screenshot(page, "03_after_signin")
 
     # ── Handle concurrent session conflict dialog ───────────────────────────
-    # Dialog text: "usted ya ha iniciado sesión en otro terminal. ¿Desea continuar?"
-    # Buttons: "Sí" and "No" — can be <a>, <button>, or <input> elements.
-    # Try up to 3 times with increasing waits in case the dialog is slow.
+    # Dialog: "usted ya ha iniciado sesión en otro terminal. ¿Desea continuar?"
+    # Buttons: "Sí"/"Si" — use JavaScript to find any matching button/link/input
+    # (Playwright :has-text is case-sensitive and accent-sensitive; JS is safer)
     for attempt in range(3):
         try:
-            yes_btn = page.locator(
-                "input[value='Sí'], input[value='Si'], "
-                "button:has-text('Sí'), button:has-text('Si'), "
-                "a:has-text('Sí'), a:has-text('Si')"
-            )
-            count = await yes_btn.count()
-            if count > 0:
-                print(f"[inpart] Session conflict dialog found ({count} btn) — clicking Sí…")
-                await yes_btn.first.click(timeout=5_000)
-                await page.wait_for_timeout(5000)   # longer wait: page fully reloads after Sí
+            clicked = await page.evaluate("""
+                () => {
+                    const all = [
+                        ...document.querySelectorAll(
+                            'button, a, input[type="button"], input[type="submit"]'
+                        )
+                    ];
+                    const btn = all.find(el => {
+                        const t = (el.textContent || el.value || '').trim();
+                        return t === 'Si' || t === 'Sí' || t === 'SI'
+                            || t === 'Yes' || t === 'YES';
+                    });
+                    if (btn) {
+                        btn.click();
+                        return (btn.tagName + ': ' + (btn.textContent || btn.value || '').trim());
+                    }
+                    return null;
+                }
+            """)
+            if clicked:
+                print(f"[inpart] Session dialog Sí clicked via JS: {clicked}")
+                await page.wait_for_timeout(6000)   # allow full page reload
                 break
             elif attempt < 2:
-                print(f"[inpart] No Sí button yet (attempt {attempt+1}) — waiting…")
+                print(f"[inpart] No Sí button yet (attempt {attempt+1}) — waiting 2s…")
                 await page.wait_for_timeout(2000)
         except Exception as ex:
             print(f"[inpart] Session dialog attempt {attempt+1} error: {ex}")
@@ -774,6 +786,33 @@ async def diagnose_connection(headless: bool = True) -> dict:
         page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
 
         try:
+            # ── Inspect login form BEFORE attempting login ─────────────────
+            await page.goto(INPART_LOGIN, wait_until="domcontentloaded", timeout=60_000)
+            await page.wait_for_timeout(1500)
+            info["login_form"] = await page.evaluate("""
+                () => ({
+                    url: window.location.href,
+                    textInputs: [...document.querySelectorAll('input[type="text"]')].map(el => ({
+                        id: el.id, name: el.name, value: el.value,
+                        visible: el.offsetWidth > 0 && el.offsetHeight > 0
+                    })),
+                    passwordInputs: [...document.querySelectorAll('input[type="password"]')].map(el => ({
+                        id: el.id, name: el.name, visible: el.offsetWidth > 0
+                    })),
+                    checkboxes: [...document.querySelectorAll('input[type="checkbox"]')].map(el => ({
+                        id: el.id, name: el.name, checked: el.checked,
+                        visible: el.offsetWidth > 0
+                    })),
+                    buttons: [...document.querySelectorAll(
+                        'input[type="submit"], button, input[type="button"]'
+                    )].map(el => ({
+                        id: el.id, value: el.value,
+                        text: el.textContent?.trim().substring(0, 40),
+                        type: el.type, visible: el.offsetWidth > 0
+                    })),
+                })
+            """)
+
             # ── Login ──────────────────────────────────────────────────────
             try:
                 ok = await login(page, debug=False)
