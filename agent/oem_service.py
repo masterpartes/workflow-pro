@@ -53,7 +53,7 @@ WMI_TO_BRAND: dict[str, str] = {
     "WP0":"porsche","WP1":"porsche",
     "JM1":"mazda","JM3":"mazda","1YV":"mazda",
     "4S3":"subaru","JF1":"subaru","JF2":"subaru",
-    "JA3":"mitsubishi","JA4":"mitsubishi","4A3":"mitsubishi",
+    "JA3":"mitsubishi","JA4":"mitsubishi","4A3":"mitsubishi","MMB":"mitsubishi","MNA":"mitsubishi","MNB":"mitsubishi",
     "SAJ":"jaguar","SAL":"landrover","SAR":"landrover",
     "YV1":"volvo","YV4":"volvo",
     # Toyota/Lexus manufactured in Thailand, South Africa, Australia (common in LatAm)
@@ -286,18 +286,25 @@ async def lookup_parts(
     base_url = OEM_URLS.get(effective_brand) if effective_brand else None
 
     if not base_url:
-        return [
-            {
-                "parte":       p,
-                "descripcion": "",
+        # Brand unknown — still try eBay for each part as fallback
+        unknown_results = []
+        for p in parts:
+            pn  = p.get("parte", "") if isinstance(p, dict) else str(p)
+            desc = p.get("descripcion", "") if isinstance(p, dict) else ""
+            print(f"     → unknown_brand (WMI: {vin[:3] if vin else '?'}) — querying eBay for {pn}...")
+            ebay_result = await ebay_search_part(pn, desc)
+            unknown_results.append({
+                "parte":       pn,
+                "descripcion": desc,
                 "msrp":        None,
                 "price":       None,
                 "vin_fits":    "N/A",
                 "url":         "",
                 "error":       f"unknown_brand (VIN WMI: {vin[:3] if vin else '?'})",
-            }
-            for p in parts
-        ]
+                "note":        "Brand not in US OEM catalog — eBay searched as fallback.",
+                "ebay":        ebay_result,
+            })
+        return unknown_results
 
     # Pre-filter: separate real OEM parts from internal Audatex codes
     real_parts = []
