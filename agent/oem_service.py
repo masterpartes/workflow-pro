@@ -383,18 +383,15 @@ async def lookup_parts(
                 and r["price"] is None
             )
             note = None
-            ebay_result = None
 
             if no_market:
                 note = ("Part not listed on oempartsonline.com for this brand. "
                         "Likely not sold in the US market (e.g. Hilux, Fortuner, "
-                        "Ecuador/LatAm-spec vehicle). Checked eBay as fallback.")
-                print(f"     → NOT IN US MARKET — querying eBay...")
-                ebay_result = await ebay_search_part(part_number, descripcion)
-            elif r["error"]:
-                # Also try eBay if oempartsonline errored
-                print(f"     → OEM error ({r['error']}) — querying eBay as fallback...")
-                ebay_result = await ebay_search_part(part_number, descripcion)
+                        "Ecuador/LatAm-spec vehicle).")
+
+            # Always search eBay — primary source for aftermarket pricing
+            print(f"     → querying eBay for {part_number}...")
+            ebay_result = await ebay_search_part(part_number, descripcion)
 
             status = r["error"] or (f"NOT IN US MARKET" if no_market else f"MSRP:{msrp_s}  Price:{price_s}  Fits:{r['vin_fits']}")
             print(f"     → {status}")
