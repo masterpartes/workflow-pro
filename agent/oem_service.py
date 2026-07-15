@@ -150,8 +150,14 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
         print(f"    GET {search_url}")
         await page.goto(search_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
-        # Extra wait for JS-heavy sites (mopar especially)
-        await page.wait_for_timeout(3500)
+        # Extra wait for JS-heavy sites (mopar especially needs networkidle)
+        if "mopar" in base_url:
+            try:
+                await page.wait_for_load_state("networkidle", timeout=12_000)
+            except Exception:
+                await page.wait_for_timeout(6_000)
+        else:
+            await page.wait_for_timeout(3500)
         result["url"] = page.url
 
         # If on search results, try to navigate to the matching product page

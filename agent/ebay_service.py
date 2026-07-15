@@ -21,7 +21,11 @@ SHIPPING_COUNTRY = "US"
 
 _token_cache: dict = {"access_token": None, "expires_at": 0}
 
-_GENUINE_WORDS = {"genuine", "oem", "original equipment", "factory oem", "dealer oem"}
+_GENUINE_WORDS = {
+    "genuine", "oem", "original equipment", "factory oem", "dealer oem",
+    # Brand-specific OEM names
+    "mopar", "motorcraft", "acdelco", "ac delco",
+}
 _AFTERMARKET_WORDS = {
     "aftermarket", "replacement", "compatible", "direct fit",
     "premium quality", "high quality", "new replacement",
