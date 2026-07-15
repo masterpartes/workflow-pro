@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+debug_screenshots/
+oem_results_temp.csv
+oem_log.txt
+*.log
