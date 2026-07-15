@@ -144,7 +144,7 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
     result = {"msrp": None, "price": None, "vin_fits": "N/A", "url": "", "error": None}
 
     vin_param  = f"&vin={vin}" if vin else ""
-    search_url = f"{base_url}/oem-parts/search?query={part_number}{vin_param}"
+    search_url = f"{base_url}/search?search_str={part_number}{vin_param}"
 
     try:
         print(f"    GET {search_url}")
