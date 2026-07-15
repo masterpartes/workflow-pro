@@ -61,11 +61,12 @@ async def login(page, debug=False) -> bool:
     """
     Log into Inpart.
     Handles:
-    - Username / password fields (correct order: fill pw, THEN check terms)
+    - Username / password fields
     - Accept Terms and Conditions checkbox
-    - Concurrent session conflict dialog ("¿Sí/No?")
+    - Concurrent session conflict dialog ("¿Desea continuar? Sí/No")
 
-    Returns True if login succeeded.
+    Success = URL contains "/AudaPartsWebApp/" (the actual app, not the login site).
+    The login site lives under "/AudaPartsSite/" — staying there means login failed.
     """
     print(f"[inpart] Navigating to login page…")
     await page.goto(INPART_LOGIN, wait_until="domcontentloaded", timeout=60_000)
@@ -75,19 +76,20 @@ async def login(page, debug=False) -> bool:
         await _screenshot(page, "01_login_page")
 
     # ── Fill username ──────────────────────────────────────────────────────
-    # The username field typically has name/id containing "user" or "User"
     user_sel = "input[name*='user' i], input[id*='user' i], input[type='text']"
     try:
         user_input = page.locator(user_sel).first
         await user_input.fill(USERNAME, timeout=10_000)
+        print(f"[inpart] Username filled")
     except Exception as e:
         print(f"[inpart] WARNING: could not fill username field: {e}")
 
-    # ── Fill password FIRST (before checking terms to avoid clearing) ──────
+    # ── Fill password ──────────────────────────────────────────────────────
     try:
         pw_input = page.locator("input[type='password']").first
         await pw_input.click(timeout=5_000)
         await pw_input.fill(PASSWORD, timeout=5_000)
+        print(f"[inpart] Password filled")
     except Exception as e:
         print(f"[inpart] WARNING: could not fill password field: {e}")
 
@@ -96,6 +98,9 @@ async def login(page, debug=False) -> bool:
         checkbox = page.locator("input[type='checkbox']").first
         if not await checkbox.is_checked():
             await checkbox.click(timeout=5_000)
+            print("[inpart] Terms checkbox checked")
+        else:
+            print("[inpart] Terms checkbox already checked")
     except Exception as e:
         print(f"[inpart] WARNING: could not check terms checkbox: {e}")
 
@@ -108,6 +113,7 @@ async def login(page, debug=False) -> bool:
             "input[type='submit'], input[value*='Sign' i], button:has-text('Sign In')"
         ).first
         await sign_in.click(timeout=5_000)
+        print("[inpart] Sign In clicked")
     except Exception as e:
         print(f"[inpart] WARNING: could not click Sign In: {e}")
 
@@ -116,41 +122,50 @@ async def login(page, debug=False) -> bool:
     if debug:
         await _screenshot(page, "03_after_signin")
 
-    # ── Handle concurrent session dialog ───────────────────────────────────
-    # Message: "usted ya ha iniciado sesión en otro terminal. Si continúa..."
-    try:
-        yes_btn = page.locator(
-            "a:has-text('Sí'), button:has-text('Sí'), input[value='Sí'],"
-            "a:has-text('Si'), button:has-text('Si'), input[value='Si']"
-        )
-        count = await yes_btn.count()
-        if count > 0:
-            print("[inpart] Session conflict dialog detected — clicking Sí…")
-            await yes_btn.first.click(timeout=5_000)
-            await page.wait_for_timeout(3000)
-    except Exception:
-        pass
-
-    # ── Verify login ───────────────────────────────────────────────────────
-    current_url = page.url.lower()
-    logged_in = (
-        "login" not in current_url
-        and "audasite" not in current_url.split("?")[0].lower()
-        and ("audaparts" in current_url or "panel" in current_url or "search" in current_url)
-    )
-
-    if not logged_in:
-        # Sometimes we're redirected to the search page directly
-        # Try navigating there explicitly
-        await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=30_000)
-        await page.wait_for_timeout(2000)
-        current_url = page.url.lower()
-        logged_in = "search" in current_url or "quotation" in current_url
+    # ── Handle concurrent session conflict dialog ───────────────────────────
+    # Dialog text: "usted ya ha iniciado sesión en otro terminal. ¿Desea continuar?"
+    # Buttons: "Sí" and "No" — can be <a>, <button>, or <input> elements.
+    # Try up to 3 times with increasing waits in case the dialog is slow.
+    for attempt in range(3):
+        try:
+            yes_btn = page.locator(
+                "input[value='Sí'], input[value='Si'], "
+                "button:has-text('Sí'), button:has-text('Si'), "
+                "a:has-text('Sí'), a:has-text('Si')"
+            )
+            count = await yes_btn.count()
+            if count > 0:
+                print(f"[inpart] Session conflict dialog found ({count} btn) — clicking Sí…")
+                await yes_btn.first.click(timeout=5_000)
+                await page.wait_for_timeout(5000)   # longer wait: page fully reloads after Sí
+                break
+            elif attempt < 2:
+                print(f"[inpart] No Sí button yet (attempt {attempt+1}) — waiting…")
+                await page.wait_for_timeout(2000)
+        except Exception as ex:
+            print(f"[inpart] Session dialog attempt {attempt+1} error: {ex}")
+            await page.wait_for_timeout(2000)
 
     if debug:
         await _screenshot(page, "04_login_result")
 
-    print(f"[inpart] Login {'succeeded' if logged_in else 'FAILED'} — URL: {page.url}")
+    # ── Verify login ───────────────────────────────────────────────────────
+    # SUCCESS = URL is under /AudaPartsWebApp/ (the supplier portal app)
+    # FAILURE = still under /AudaPartsSite/ (the marketing/login site)
+    current_url = page.url
+    logged_in = "/AudaPartsWebApp/" in current_url
+
+    if not logged_in:
+        print(f"[inpart] Not on AudaPartsWebApp after login ({current_url}) — retrying nav…")
+        try:
+            await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_timeout(2000)
+            current_url = page.url
+            logged_in = "/AudaPartsWebApp/" in current_url
+        except Exception as e:
+            print(f"[inpart] Direct nav to search failed: {e}")
+
+    print(f"[inpart] Login {'SUCCEEDED' if logged_in else 'FAILED'} — URL: {page.url}")
     return logged_in
 
 
