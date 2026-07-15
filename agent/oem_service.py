@@ -27,6 +27,8 @@ try:
 except ImportError:
     STEALTH = False
 
+from ebay_service import search_part as ebay_search_part
+
 # ── VIN → brand map (same as oem_lookup.py) ──────────────────────────────────
 WMI_TO_BRAND: dict[str, str] = {
     "1B3":"mopar","1B7":"mopar","1C3":"mopar","1C4":"mopar","1C6":"mopar",
@@ -287,6 +289,7 @@ async def lookup_parts(
                 "vin_fits":    "N/A",
                 "url":         "",
                 "error":       f"unknown_brand (VIN WMI: {vin[:3] if vin else '?'})",
+                "ebay":        None,
             }
             for p in parts
         ]
@@ -308,6 +311,7 @@ async def lookup_parts(
                 "error":       "internal_audatex_code",
                 "note":        "This is an internal Inpart code, not an OEM part number. "
                                "Look up manually in the OEM catalog.",
+                "ebay":        None,
             })
             print(f"  [skip] {part_number} — internal Audatex code, not a real OEM number")
         else:
@@ -368,25 +372,17 @@ async def lookup_parts(
                 and r["price"] is None
             )
             note = None
+            ebay_result = None
+
             if no_market:
                 note = ("Part not listed on oempartsonline.com for this brand. "
                         "Likely not sold in the US market (e.g. Hilux, Fortuner, "
-                        "Ecuador/LatAm-spec vehicle). Check regional OEM catalog.")
+                        "Ecuador/LatAm-spec vehicle). Checked eBay as fallback.")
+                print(f"     → NOT IN US MARKET — querying eBay...")
+                ebay_result = await ebay_search_part(part_number, descripcion)
+            elif r["error"]:
+                # Also try eBay if oempartsonline errored
+                print(f"     → OEM error ({r['error']}) — querying eBay as fallback...")
+                ebay_result = await ebay_search_part(part_number, descripcion)
 
-            status = r["error"] or (f"NOT IN US MARKET" if no_market else f"MSRP:{msrp_s}  Price:{price_s}  Fits:{r['vin_fits']}")
-            print(f"     → {status}")
-
-            results.append({
-                "parte":       part_number,
-                "descripcion": descripcion,
-                "msrp":        r["msrp"],
-                "price":       r["price"],
-                "vin_fits":    r["vin_fits"],
-                "url":         r["url"],
-                "error":       r["error"],
-                "note":        note,
-            })
-
-        await browser.close()
-
-    return results
+            status = r["error"] or

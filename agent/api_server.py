@@ -30,8 +30,10 @@ from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from fastapi.responses import JSONResponse
 from inpart_scraper import scrape_pending_quotations
 from oem_service import lookup_parts, brand_from_vin
+from ebay_service import compute_deletion_challenge_response
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -264,22 +266,16 @@ async def inpart_quote_all(req: InpartQuoteAllRequest):
     }
 
 
-# ── Startup ───────────────────────────────────────────────────────────────────
+# ── eBay marketplace account deletion webhook ─────────────────────────────────
+# Required for eBay production API compliance.
+# eBay sends a GET with ?challenge_code=xxx for verification,
+# and POST requests when a marketplace account is deleted.
+# We don't sell on eBay so account deletions are no-ops — we just need to
+# respond correctly to the verification challenge.
 
-@app.on_event("startup")
-async def startup():
-    # Validate required env vars
-    missing = []
-    for var in ("INPART_USERNAME", "INPART_PASSWORD", "API_SECRET_KEY"):
-        if not os.environ.get(var):
-            missing.append(var)
-    if missing:
-        print(f"WARNING: Missing environment variables: {', '.join(missing)}")
-    else:
-        print("[startup] All required environment variables are set.")
+EBAY_VERIFICATION_TOKEN = os.environ.get("EBAY_VERIFICATION_TOKEN", "")
+EBAY_ENDPOINT_URL = "https://workflow-pro-production-13ab.up.railway.app/ebay/marketplace-deletion"
 
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("api_server:app", host="0.0.0.0", port=port, reload=False)
+@app.get("/ebay/marketplace-deletion")
+async def ebay_deletion_challenge(cha
