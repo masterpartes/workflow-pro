@@ -519,6 +519,7 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
                 ).first
 
             popup_page = None
+            page_url_before = page.url
             try:
                 async with page.context.expect_page(timeout=8_000) as popup_info:
                     await visualizar.click(timeout=5_000)
@@ -527,22 +528,33 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
                 await popup_page.wait_for_timeout(1500)
                 print(f"[inpart] Popup captured: {popup_page.url}")
             except Exception as popup_err:
-                print(f"[inpart] No popup ({popup_err}) — trying window.open override")
-                # Strategy B: override window.open to navigate in-place, then click
-                await page.evaluate("""
-                    window.open = function(url, target, specs) {
-                        if (url && url !== 'about:blank') {
-                            window.location.href = url;
-                        }
-                        return window;
-                    };
-                """)
+                print(f"[inpart] No popup captured ({popup_err})")
+                # Wait for any in-progress same-window navigation to finish
                 try:
-                    async with page.expect_navigation(timeout=10_000):
-                        await visualizar.click(timeout=5_000)
-                    await page.wait_for_timeout(1000)
-                except Exception as nav_err:
-                    print(f"[inpart] WARNING: Visualizar nav failed: {nav_err}")
+                    await page.wait_for_load_state("domcontentloaded", timeout=10_000)
+                except Exception:
+                    pass
+                current_url = page.url
+                if current_url != page_url_before:
+                    # __doPostBack() triggered same-window navigation — already on target
+                    print(f"[inpart] Main page navigated in-place to: {current_url}")
+                else:
+                    # Page unchanged — try window.open override and click again
+                    print(f"[inpart] Page unchanged, trying window.open override")
+                    await page.evaluate("""
+                        window.open = function(url, target, specs) {
+                            if (url && url !== 'about:blank') {
+                                window.location.href = url;
+                            }
+                            return window;
+                        };
+                    """)
+                    try:
+                        async with page.expect_navigation(timeout=10_000):
+                            await visualizar.click(timeout=5_000)
+                        await page.wait_for_timeout(1000)
+                    except Exception as nav_err:
+                        print(f"[inpart] WARNING: Visualizar nav failed: {nav_err}")
 
             # Use popup_page if captured, otherwise main page
             dp = popup_page if popup_page else page
