@@ -330,7 +330,9 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
             );
 
             const idx = {
-                cot:        fi(['cotizaci']),
+                // Use startsWith regex so we match "cotización" (col 1)
+                // but NOT "origen del cotización" (col 0) or "fecha/hora cotización" (col 7)
+                cot:        headers.findIndex(h => /^cotizaci/.test(h)),
                 aseg:       fi(['origen', 'aseg', 'compañ']),
                 taller:     fi(['taller']),
                 poliza:     fi(['póliza', 'poliza', 'documento']),
