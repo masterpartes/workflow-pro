@@ -73,4 +73,33 @@ Rules:
 - If a part has `note` containing "not sold in the US market", add a footnote: "* No disponible en mercado US — precio eBay es referencial."
 
 After the table, show a summary line:
-"X de Y piezas con precio OEM encontrado. [N pie
+"X de Y piezas con precio OEM encontrado. [N piezas con precio eBay como referencia.]"
+
+## API call format
+
+POST /quote
+```json
+{
+  "parts": [
+    {"parte": "68404445AB", "descripcion": "PARACHOQUES TRA."},
+    {"parte": "68299104AE", "descripcion": "REC.PARACHOQUES TRA"}
+  ],
+  "vin": "3C6UR5DL9JG359190"
+}
+```
+
+POST /inpart/quote-all
+```json
+{
+  "days_back": 7,
+  "force_resync": false
+}
+```
+
+## Error handling
+
+- `warning: no_vin_found` → note it, ask user for VIN manually.
+- `warning: unknown_brand` → ask user for brand, retry with explicit `brand` parameter. eBay data is still returned in the response.
+- API returns 401 → API key is wrong.
+- API unreachable → service may be down, suggest checking Railway.
+- `ebay.error: no_credentials` → eBay not configured on server.
