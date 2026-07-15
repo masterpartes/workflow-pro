@@ -1,100 +1,104 @@
 """
 ebay_service.py - eBay Browse API price lookup for auto parts
-=============================================================
-Uses OAuth2 Client Credentials (no user login needed) to search
-eBay for a part number and return price range + listing count.
+Required env vars: EBAY_APP_ID, EBAY_CERT_ID
 
-Required env vars:
-  EBAY_APP_ID   - Production App ID / Client ID
-  EBAY_CERT_ID  - Production Cert ID / Client Secret
+Filters: New condition only, Buy It Now only, shipping to Miami FL 33195
+Results split into: genuine / aftermarket / all
 """
 
 import hashlib
-import hmac
-import json
 import os
 import time
 from typing import Optional
 
 import httpx
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-EBAY_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+EBAY_TOKEN_URL  = "https://api.ebay.com/identity/v1/oauth2/token"
 EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-
-# eBay category IDs relevant to auto parts
-# 6028 = Car & Truck Parts & Accessories
-# 33637 = Other Car & Truck Parts (fallback)
 AUTO_PARTS_CATEGORY = "6028"
+SHIPPING_ZIP     = "33195"
+SHIPPING_COUNTRY = "US"
 
-# Simple in-process token cache
 _token_cache: dict = {"access_token": None, "expires_at": 0}
 
+_GENUINE_WORDS = {"genuine", "oem", "original equipment", "factory oem", "dealer oem"}
+_AFTERMARKET_WORDS = {
+    "aftermarket", "replacement", "compatible", "direct fit",
+    "premium quality", "high quality", "new replacement",
+}
 
-# ── OAuth2 ────────────────────────────────────────────────────────────────────
 
 async def _get_access_token() -> Optional[str]:
-    """Get a valid OAuth2 client credentials token, using cache if still valid."""
     now = time.time()
     if _token_cache["access_token"] and now < _token_cache["expires_at"] - 60:
         return _token_cache["access_token"]
-
-    app_id = os.environ.get("EBAY_APP_ID")
+    app_id  = os.environ.get("EBAY_APP_ID")
     cert_id = os.environ.get("EBAY_CERT_ID")
-
     if not app_id or not cert_id:
-        print("[ebay] EBAY_APP_ID or EBAY_CERT_ID not set — skipping eBay lookup")
+        print("[ebay] EBAY_APP_ID or EBAY_CERT_ID not set")
         return None
-
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             EBAY_TOKEN_URL,
-            data={
-                "grant_type": "client_credentials",
-                "scope": "https://api.ebay.com/oauth/api_scope",
-            },
+            data={"grant_type": "client_credentials",
+                  "scope": "https://api.ebay.com/oauth/api_scope"},
             auth=(app_id, cert_id),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-
     if resp.status_code != 200:
         print(f"[ebay] Token error {resp.status_code}: {resp.text[:200]}")
         return None
-
     data = resp.json()
     _token_cache["access_token"] = data.get("access_token")
-    _token_cache["expires_at"] = now + data.get("expires_in", 7200)
+    _token_cache["expires_at"]   = now + data.get("expires_in", 7200)
     return _token_cache["access_token"]
 
 
-# ── Part number search ────────────────────────────────────────────────────────
+def _classify(title: str) -> str:
+    t = title.lower()
+    if any(kw in t for kw in _GENUINE_WORDS):
+        return "genuine"
+    if any(kw in t for kw in _AFTERMARKET_WORDS):
+        return "aftermarket"
+    return "unknown"
+
+
+def _shipping_cost(item: dict) -> Optional[float]:
+    costs = []
+    for opt in item.get("shippingOptions", []):
+        try:
+            costs.append(float(opt.get("shippingCost", {}).get("value", 0)))
+        except (ValueError, TypeError):
+            pass
+    return round(min(costs), 2) if costs else None
+
+
+def _bucket_stats(items_data: list) -> dict:
+    if not items_data:
+        return {"count": 0, "price_min": None, "price_max": None,
+                "price_avg": None, "ship_min": None}
+    prices    = [p for p, _ in items_data]
+    shippings = [s for _, s in items_data if s is not None]
+    return {
+        "count":     len(prices),
+        "price_min": round(min(prices), 2),
+        "price_max": round(max(prices), 2),
+        "price_avg": round(sum(prices) / len(prices), 2),
+        "ship_min":  round(min(shippings), 2) if shippings else None,
+    }
+
 
 async def search_part(part_number: str, descripcion: str = "") -> dict:
     """
-    Search eBay for a part number.
-
-    Returns:
-        {
-          "found":        bool,
-          "listing_count": int,
-          "price_min":    float | None,
-          "price_max":    float | None,
-          "price_avg":    float | None,
-          "currency":     str,
-          "url":          str,          # eBay search results URL
-          "error":        str | None,
-        }
+    Search eBay for a part number (new + Buy It Now + ships to Miami FL 33195).
+    Returns price stats split by genuine vs aftermarket.
     """
+    _empty = {"count": 0, "price_min": None, "price_max": None,
+              "price_avg": None, "ship_min": None}
     result = {
-        "found": False,
-        "listing_count": 0,
-        "price_min": None,
-        "price_max": None,
-        "price_avg": None,
-        "currency": "USD",
-        "url": "",
-        "error": None,
+        "found": False, "listing_count": 0,
+        "genuine": dict(_empty), "aftermarket": dict(_empty), "all": dict(_empty),
+        "currency": "USD", "url": "", "error": None,
     }
 
     token = await _get_access_token()
@@ -102,25 +106,20 @@ async def search_part(part_number: str, descripcion: str = "") -> dict:
         result["error"] = "no_credentials"
         return result
 
-    # Build search query: part number + description words for relevance
     query = part_number.strip()
     if descripcion:
-        # Add first 3 words of description to narrow results
         extra = " ".join(descripcion.split()[:3])
         query = f"{query} {extra}"
 
-    search_url = (
-        f"{EBAY_BROWSE_URL}"
-        f"?q={httpx.URL(query)}"
-        f"&category_ids={AUTO_PARTS_CATEGORY}"
-        f"&limit=50"
-        f"&fieldgroups=MATCHING_ITEMS"
+    result["url"] = (
+        "https://www.ebay.com/sch/6028/i.html"
+        + "?_nkw=" + part_number.replace(" ", "+")
+        + "&LH_BIN=1&LH_ItemCondition=1000&LH_Shipped_to=US"
     )
 
-    result["url"] = (
-        f"https://www.ebay.com/sch/6028/i.html"
-        f"?_nkw={part_number.replace(' ', '+')}"
-        f"&LH_ItemCondition=3000"  # New condition
+    enduserctx = (
+        "contextualLocation=country%3D" + SHIPPING_COUNTRY
+        + "%2Czip%3D" + SHIPPING_ZIP
     )
 
     try:
@@ -128,75 +127,71 @@ async def search_part(part_number: str, descripcion: str = "") -> dict:
             resp = await client.get(
                 EBAY_BROWSE_URL,
                 params={
-                    "q": query,
+                    "q":            query,
                     "category_ids": AUTO_PARTS_CATEGORY,
-                    "limit": "50",
-                    "filter": "conditionIds:{1000|1500|2000|2500|3000}",  # New & like-new
+                    "limit":        "50",
+                    "filter":       "conditionIds:{1000},buyingOptions:{FIXED_PRICE}",
                 },
                 headers={
-                    "Authorization": f"Bearer {token}",
+                    "Authorization":           f"Bearer {token}",
                     "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-                    "Content-Type": "application/json",
+                    "X-EBAY-C-ENDUSERCTX":     enduserctx,
+                    "Content-Type":             "application/json",
                 },
             )
 
         if resp.status_code == 200:
-            data = resp.json()
+            data  = resp.json()
             items = data.get("itemSummaries", [])
             total = data.get("total", 0)
-
             if items:
-                prices = []
+                genuine_data, aftermarket_data, all_data = [], [], []
                 for item in items:
-                    price_obj = item.get("price", {})
                     try:
-                        prices.append(float(price_obj.get("value", 0)))
+                        price = float(item.get("price", {}).get("value", 0))
                     except (ValueError, TypeError):
-                        pass
-
-                if prices:
-                    result["found"] = True
-                    result["listing_count"] = total
-                    result["price_min"] = round(min(prices), 2)
-                    result["price_max"] = round(max(prices), 2)
-                    result["price_avg"] = round(sum(prices) / len(prices), 2)
-                    result["currency"] = items[0].get("price", {}).get("currency", "USD")
-                    print(
-                        f"[ebay] {part_number}: {total} listings, "
-                        f"${result['price_min']}–${result['price_max']} avg ${result['price_avg']}"
-                    )
+                        continue
+                    ship  = _shipping_cost(item)
+                    label = _classify(item.get("title", ""))
+                    all_data.append((price, ship))
+                    if label == "genuine":
+                        genuine_data.append((price, ship))
+                    elif label == "aftermarket":
+                        aftermarket_data.append((price, ship))
+                if all_data:
+                    result.update({
+                        "found": True, "listing_count": total,
+                        "genuine":     _bucket_stats(genuine_data),
+                        "aftermarket": _bucket_stats(aftermarket_data),
+                        "all":         _bucket_stats(all_data),
+                        "currency":    items[0].get("price", {}).get("currency", "USD"),
+                    })
+                    g, a = result["genuine"], result["aftermarket"]
+                    print(f"[ebay] {part_number}: {total} listings | "
+                          f"genuine={g['count']} avg=${g['price_avg']} | "
+                          f"aftermarket={a['count']} avg=${a['price_avg']}")
             else:
-                print(f"[ebay] {part_number}: no listings found")
+                print(f"[ebay] {part_number}: no Buy-It-Now new listings found")
 
         elif resp.status_code == 401:
-            # Token expired mid-request; clear cache
             _token_cache["access_token"] = None
-            _token_cache["expires_at"] = 0
+            _token_cache["expires_at"]   = 0
             result["error"] = "token_expired"
-            print(f"[ebay] Token expired for {part_number}")
         else:
             result["error"] = f"http_{resp.status_code}"
             print(f"[ebay] {part_number}: HTTP {resp.status_code} — {resp.text[:200]}")
 
     except httpx.TimeoutException:
         result["error"] = "timeout"
-        print(f"[ebay] {part_number}: timeout")
     except Exception as e:
         result["error"] = str(e)
-        print(f"[ebay] {part_number}: {e}")
 
     return result
 
 
-# ── Marketplace deletion webhook helpers ──────────────────────────────────────
-
-def compute_deletion_challenge_response(challenge_code: str, verification_token: str, endpoint: str) -> str:
-    """
-    Compute the challengeResponse hash required by eBay's marketplace
-    account deletion notification endpoint verification.
-
-    Hash = SHA-256( challengeCode + verificationToken + endpoint )
-    """
+def compute_deletion_challenge_response(
+    challenge_code: str, verification_token: str, endpoint: str
+) -> str:
     m = hashlib.sha256()
     m.update(challenge_code.encode())
     m.update(verification_token.encode())
