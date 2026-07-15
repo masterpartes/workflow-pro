@@ -359,16 +359,34 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
                 const m = cotId.match(/\d+/);
                 if (!m) continue;
 
+                // Extract the Visualizar detail URL from the row's button/link
+                let idUrl = null;
+                const imgBtn = row.querySelector('input[type="image"]');
+                if (imgBtn) {
+                    const oc = imgBtn.getAttribute('onclick') || '';
+                    let mu = oc.match(/window\.open\(['"]([^'"]+)['"]/i);
+                    if (mu) idUrl = mu[1];
+                }
+                if (!idUrl) {
+                    const aEl = row.querySelector('a[href*="Answer"], a[href*="IdQuotation"]');
+                    if (aEl) idUrl = aEl.getAttribute('href');
+                }
+                if (!idUrl && imgBtn) {
+                    const pa = imgBtn.closest('a');
+                    if (pa) idUrl = pa.getAttribute('href');
+                }
+
                 quotations.push({
-                    cotizacion_id: m[0],
-                    aseguradora:   g(idx.aseg),
-                    taller:        g(idx.taller),
-                    poliza:        g(idx.poliza),
-                    siniestro:     g(idx.siniestro),
-                    matricula:     g(idx.matricula),
-                    armadora:      g(idx.armadora),
-                    fecha:         g(idx.fecha),
-                    pendientes:    g(idx.pendientes),
+                    cotizacion_id:    m[0],
+                    aseguradora:      g(idx.aseg),
+                    taller:           g(idx.taller),
+                    poliza:           g(idx.poliza),
+                    siniestro:        g(idx.siniestro),
+                    matricula:        g(idx.matricula),
+                    armadora:         g(idx.armadora),
+                    fecha:            g(idx.fecha),
+                    pendientes:       g(idx.pendientes),
+                    id_quotation_url: idUrl,
                 });
             }
 
@@ -410,7 +428,7 @@ _TAB_DATOS_ID = "__tab_ctl00_cphBody_tbcAnswerQuotation_tabQuotationData"
 _PANEL_DATOS_ID = "ctl00_cphBody_tbcAnswerQuotation_tabQuotationData"
 
 
-async def get_quotation_detail(page, cotizacion_id: str, debug=False) -> dict:
+async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str = None, debug=False) -> dict:
     """
     Open the detail page for a specific quotation and scrape:
       Tab "Items Cotización" — parts list: [{parte, descripcion}]
@@ -425,75 +443,108 @@ async def get_quotation_detail(page, cotizacion_id: str, debug=False) -> dict:
     """
     print(f"[inpart] Fetching detail for COT {cotizacion_id}…")
 
-    # Navigate to search and filter by this specific cotizacion
-    await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
-    await page.wait_for_timeout(2000)
+    # ── Strategy 1: use pre-extracted IdQuotation URL from search results ─────
+    if id_quotation_url:
+        full_url = (
+            id_quotation_url if id_quotation_url.startswith("http")
+            else f"{INPART_BASE}/AudaPartsWebApp/{id_quotation_url.lstrip('/')}"
+        )
+        print(f"[inpart] Direct URL (pre-extracted): {full_url}")
+        await page.goto(full_url, wait_until="domcontentloaded", timeout=45_000)
+        await page.wait_for_timeout(2000)
 
-    # Fill cotizacion number filter (first text input on the form)
-    try:
-        cot_input = page.locator(
-            "input[id*='Cot'][type='text'], input[name*='Cot'][type='text']"
-        ).first
-        if await cot_input.count() == 0:
-            cot_input = page.locator("input[type='text']").first
-        await cot_input.fill(str(cotizacion_id))
-    except Exception as e:
-        print(f"[inpart] WARNING: could not fill cotizacion filter: {e}")
+    else:
+        # ── Strategy 2: search by cotizacion number, then navigate to detail ──
+        await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
+        await page.wait_for_timeout(2000)
 
-    # Click Buscar
-    try:
-        await page.locator("input[value='Buscar' i], button:has-text('Buscar')").first.click(timeout=5_000)
-    except Exception as e:
-        print(f"[inpart] WARNING: Buscar click failed: {e}")
+        # Fill cotizacion number filter
+        try:
+            cot_input = page.locator(
+                "#ctl00_cphBody_txtQuotationNumber, "
+                "input[id*='QuotationNumber'], input[id*='quotationNumber']"
+            ).first
+            if await cot_input.count() == 0:
+                cot_input = page.locator("input[type='text']").first
+            await cot_input.fill(str(cotizacion_id))
+        except Exception as e:
+            print(f"[inpart] WARNING: could not fill cotizacion filter: {e}")
 
-    await page.wait_for_timeout(3000)
+        # Click Buscar
+        try:
+            await page.locator("input[value='Buscar' i], button:has-text('Buscar')").first.click(timeout=5_000)
+        except Exception as e:
+            print(f"[inpart] WARNING: Buscar click failed: {e}")
+        await page.wait_for_timeout(3000)
 
-    # ── Capture the detail URL from the Visualizar onclick before clicking ─
-    # The button calls window.open(url, ...) — we extract the URL from JS
-    detail_url = None
-    try:
-        detail_url = await page.evaluate("""
+        # Try to extract the detail URL from the Visualizar button's onclick/href
+        extracted_url = await page.evaluate("""
             () => {
-                // Find the first image-type input (Visualizar button)
                 const btn = document.querySelector('input[type="image"]');
-                if (!btn) return null;
-                // The onclick typically has something like:
-                //   window.open('frmQuotationSupplierAnswer.aspx?IdQuotation=XXX', ...)
-                const onclick = btn.getAttribute('onclick') || '';
-                const m = onclick.match(/window\\.open\\('([^']+)'/);
-                return m ? m[1] : null;
+                if (btn) {
+                    const oc = btn.getAttribute('onclick') || '';
+                    let m = oc.match(/window\\.open\\(['"]([^'"]+)['"]/i);
+                    if (m) return m[1];
+                }
+                const a = document.querySelector(
+                    'a[href*="Answer"], a[href*="IdQuotation"]'
+                );
+                if (a) return a.getAttribute('href');
+                if (btn) {
+                    const pa = btn.closest('a');
+                    if (pa) return pa.getAttribute('href');
+                }
+                return null;
             }
         """)
-    except Exception:
-        pass
 
-    if detail_url:
-        # Navigate directly to the detail page (no popup needed)
-        full_url = f"{INPART_BASE}/AudaPartsWebApp/{detail_url.lstrip('/')}"
-        print(f"[inpart] Navigating directly to: {full_url}")
-        await page.goto(full_url, wait_until="domcontentloaded", timeout=45_000)
-    else:
-        # Fallback: override window.open and click the button
-        print(f"[inpart] Could not extract detail URL — using window.open override")
-        await page.add_init_script("""
-            window.open = function(url, target, specs) {
-                if (url && url !== 'about:blank') {
-                    window.location.href = url;
-                }
-                return window;
-            };
-        """)
-        try:
-            visualizar = page.locator("input[type='image']").first
-            if await visualizar.count() > 0:
-                await visualizar.click(timeout=5_000)
-            else:
-                v2 = page.locator("a[title*='isualiz' i], input[title*='isualiz' i]").first
-                await v2.click(timeout=5_000)
-        except Exception as e:
-            print(f"[inpart] WARNING: Visualizar click failed: {e}")
+        if extracted_url:
+            full_url = (
+                extracted_url if extracted_url.startswith("http")
+                else f"{INPART_BASE}/AudaPartsWebApp/{extracted_url.lstrip('/')}"
+            )
+            print(f"[inpart] Navigating directly (extracted): {full_url}")
+            await page.goto(full_url, wait_until="domcontentloaded", timeout=45_000)
+            await page.wait_for_timeout(2000)
+        else:
+            # Last resort: override window.open on the CURRENT page (not init_script)
+            # then click Visualizar and wait for navigation.
+            print(f"[inpart] No detail URL found — using window.open override on page")
+            await page.evaluate("""
+                window.open = function(url, target, specs) {
+                    if (url && url !== 'about:blank') {
+                        window.location.href = url;
+                    }
+                    return window;
+                };
+            """)
+            try:
+                visualizar = page.locator("input[type='image']").first
+                if await visualizar.count() > 0:
+                    async with page.expect_navigation(timeout=10_000):
+                        await visualizar.click(timeout=5_000)
+                else:
+                    v2 = page.locator(
+                        "a[title*='isualiz' i], input[title*='isualiz' i], "
+                        "a[href*='Answer']"
+                    ).first
+                    async with page.expect_navigation(timeout=10_000):
+                        await v2.click(timeout=5_000)
+            except Exception as e:
+                print(f"[inpart] WARNING: Visualizar click failed: {e}")
+            await page.wait_for_timeout(2000)
 
-    await page.wait_for_timeout(3000)
+    # Bail out if we ended up on the wrong page
+    actual_url_check = page.url
+    if "ControlPanel" in actual_url_check or "Login" in actual_url_check:
+        print(f"[inpart] WARNING: landed on wrong page ({actual_url_check}) for COT {cotizacion_id}")
+        return {
+            "cotizacion_id": cotizacion_id,
+            "detail_url": actual_url_check,
+            "vin": None, "matricula": None, "siniestro": None,
+            "aseguradora": None, "taller": None, "armadora": None,
+            "ano_modelo": None, "partes": [],
+        }
 
     if debug:
         await _screenshot(page, f"08_cot{cotizacion_id}_detail")
@@ -711,9 +762,16 @@ async def scrape_pending_quotations(
                 for q in quotations:
                     try:
                         detail = await get_quotation_detail(
-                            page, q["cotizacion_id"], debug=debug
+                            page, q["cotizacion_id"],
+                            id_quotation_url=q.get("id_quotation_url"),
+                            debug=debug,
                         )
-                        q.update(detail)
+                        # Only overwrite fields that detail actually found.
+                        # This preserves aseguradora/taller/matricula/etc. that were
+                        # already extracted from the search results table.
+                        for k, v in detail.items():
+                            if v is not None and v != []:
+                                q[k] = v
                     except Exception as e:
                         print(f"[inpart] ERROR getting detail for COT {q['cotizacion_id']}: {e}")
 
