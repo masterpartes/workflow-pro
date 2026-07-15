@@ -454,7 +454,9 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
         await page.wait_for_timeout(2000)
 
     else:
-        # ── Strategy 2: search by cotizacion number, then navigate to detail ──
+        # ── Strategy 2: search by cotizacion number, click Visualizar (same-window nav) ──
+        # Confirmed: Visualizar is a __doPostBack image button that navigates the current
+        # page to frmQuotationSupplierAnswer.aspx?IdQuotation=xxx — NOT a popup.
         await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
         await page.wait_for_timeout(2000)
 
@@ -470,113 +472,62 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
         except Exception as e:
             print(f"[inpart] WARNING: could not fill cotizacion filter: {e}")
 
-        # Click Buscar
+        # Click Buscar and wait for grid to refresh
         try:
-            await page.locator("input[value='Buscar' i], button:has-text('Buscar')").first.click(timeout=5_000)
+            await page.locator(
+                "input[value='Buscar' i], button:has-text('Buscar')"
+            ).first.click(timeout=5_000)
         except Exception as e:
             print(f"[inpart] WARNING: Buscar click failed: {e}")
         await page.wait_for_timeout(3000)
 
-        # Try to extract the detail URL from the Visualizar button's onclick/href
-        extracted_url = await page.evaluate("""
-            () => {
-                const btn = document.querySelector('input[type="image"]');
-                if (btn) {
-                    const oc = btn.getAttribute('onclick') || '';
-                    let m = oc.match(/window\\.open\\(['"]([^'"]+)['"]/i);
-                    if (m) return m[1];
-                }
-                const a = document.querySelector(
-                    'a[href*="Answer"], a[href*="IdQuotation"]'
-                );
-                if (a) return a.getAttribute('href');
-                if (btn) {
-                    const pa = btn.closest('a');
-                    if (pa) return pa.getAttribute('href');
-                }
-                return null;
-            }
+        # Log every image button on the page so Railway logs show us exactly
+        # which buttons exist and what their onclick/name/id looks like.
+        btn_info = await page.evaluate("""
+            () => Array.from(document.querySelectorAll('input[type="image"]')).map(b => ({
+                id:      b.id,
+                name:    b.name,
+                title:   b.title,
+                onclick: (b.getAttribute('onclick') || '').slice(0, 200),
+                src:     (b.src || '').split('/').pop(),
+                inTable: !!b.closest('table[id]'),
+                tableId: (b.closest('table[id]') || {}).id || null,
+            }))
         """)
+        print(f"[inpart] Image buttons after search: {btn_info}")
 
-        if extracted_url:
-            full_url = (
-                extracted_url if extracted_url.startswith("http")
-                else f"{INPART_BASE}/AudaPartsWebApp/{extracted_url.lstrip('/')}"
-            )
-            print(f"[inpart] Navigating directly (extracted): {full_url}")
-            await page.goto(full_url, wait_until="domcontentloaded", timeout=45_000)
-            await page.wait_for_timeout(2000)
-        else:
-            # No URL extracted — try clicking Visualizar and capturing the popup.
-            # Inpart typically opens the detail in a new window (window.open popup).
-            # Strategy A: capture popup via context.expect_page()
-            # Strategy B: if no popup fires, override window.open on current page
-            #             and click again for same-window navigation.
+        # Prefer a button that lives inside the GridView table (data row),
+        # not a form/header button like Buscar or Clear.
+        visualizar = page.locator(
+            "table[id*='GridView'] input[type='image'], "
+            "table[id*='gridview'] input[type='image'], "
+            "table[id*='Grid'] input[type='image']"
+        ).first
+        if await visualizar.count() == 0:
+            # Fallback: any image button whose id/name suggests it is Visualizar
+            visualizar = page.locator(
+                "input[type='image'][id*='Visual' i], "
+                "input[type='image'][name*='Visual' i], "
+                "input[type='image'][title*='isualiz' i]"
+            ).first
+        if await visualizar.count() == 0:
+            # Last resort: first image button on page
             visualizar = page.locator("input[type='image']").first
-            if await visualizar.count() == 0:
-                visualizar = page.locator(
-                    "a[title*='isualiz' i], input[title*='isualiz' i], a[href*='Answer']"
-                ).first
 
-            popup_page = None
-            page_url_before = page.url
-            try:
-                async with page.context.expect_page(timeout=8_000) as popup_info:
-                    await visualizar.click(timeout=5_000)
-                popup_page = await popup_info.value
-                await popup_page.wait_for_load_state("domcontentloaded", timeout=15_000)
-                await popup_page.wait_for_timeout(1500)
-                print(f"[inpart] Popup captured: {popup_page.url}")
-            except Exception as popup_err:
-                print(f"[inpart] No popup captured ({popup_err})")
-                # Wait for any in-progress same-window navigation to finish
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=10_000)
-                except Exception:
-                    pass
-                current_url = page.url
-                if current_url != page_url_before:
-                    # __doPostBack() triggered same-window navigation — already on target
-                    print(f"[inpart] Main page navigated in-place to: {current_url}")
-                else:
-                    # Page unchanged — try window.open override and click again
-                    print(f"[inpart] Page unchanged, trying window.open override")
-                    await page.evaluate("""
-                        window.open = function(url, target, specs) {
-                            if (url && url !== 'about:blank') {
-                                window.location.href = url;
-                            }
-                            return window;
-                        };
-                    """)
-                    try:
-                        async with page.expect_navigation(timeout=10_000):
-                            await visualizar.click(timeout=5_000)
-                        await page.wait_for_timeout(1000)
-                    except Exception as nav_err:
-                        print(f"[inpart] WARNING: Visualizar nav failed: {nav_err}")
+        # Use expect_navigation — the click does a same-window __doPostBack
+        print(f"[inpart] Clicking Visualizar for COT {cotizacion_id}, URL before: {page.url}")
+        try:
+            async with page.expect_navigation(
+                wait_until="domcontentloaded", timeout=20_000
+            ):
+                await visualizar.click(timeout=5_000)
+            await page.wait_for_timeout(1500)
+        except Exception as nav_err:
+            print(f"[inpart] WARNING: Visualizar navigation error: {nav_err}")
+            # Navigation may have already completed — check URL
+            await page.wait_for_timeout(2000)
 
-            # Use popup_page if captured, otherwise main page
-            dp = popup_page if popup_page else page
-            dp_url = dp.url
-            print(f"[inpart] Detail page URL: {dp_url}")
-
-            # If we still ended up on the wrong page, bail gracefully
-            if "ControlPanel" in dp_url or "Login" in dp_url or "Search" in dp_url:
-                print(f"[inpart] WARNING: wrong page for COT {cotizacion_id}: {dp_url}")
-                if popup_page:
-                    await popup_page.close()
-                return {
-                    "cotizacion_id": cotizacion_id,
-                    "detail_url": dp_url,
-                    "vin": None, "matricula": None, "siniestro": None,
-                    "aseguradora": None, "taller": None, "armadora": None,
-                    "ano_modelo": None, "partes": [],
-                }
-
-            # Scrape from dp (popup or main page)
-            return await _scrape_detail_tabs(dp, cotizacion_id, debug,
-                                             close_after=popup_page is not None)
+        print(f"[inpart] URL after Visualizar click: {page.url}")
 
     # ── We navigated directly (Strategy 1 or 2a) — scrape main page ──────────
     actual_url_check = page.url
