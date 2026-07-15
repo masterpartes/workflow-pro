@@ -79,12 +79,14 @@ def _bucket_stats(items_data: list) -> dict:
                 "price_avg": None, "ship_min": None}
     prices    = [p for p, _ in items_data]
     shippings = [s for _, s in items_data if s is not None]
+    totals    = [p + (s if s is not None else 0) for p, s in items_data]
     return {
         "count":     len(prices),
         "price_min": round(min(prices), 2),
         "price_max": round(max(prices), 2),
         "price_avg": round(sum(prices) / len(prices), 2),
         "ship_min":  round(min(shippings), 2) if shippings else None,
+        "total_min": round(min(totals), 2),   # lowest (price + shipping to Miami)
     }
 
 
