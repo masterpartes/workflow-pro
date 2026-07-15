@@ -289,7 +289,6 @@ async def lookup_parts(
                 "vin_fits":    "N/A",
                 "url":         "",
                 "error":       f"unknown_brand (VIN WMI: {vin[:3] if vin else '?'})",
-                "ebay":        None,
             }
             for p in parts
         ]
@@ -311,7 +310,6 @@ async def lookup_parts(
                 "error":       "internal_audatex_code",
                 "note":        "This is an internal Inpart code, not an OEM part number. "
                                "Look up manually in the OEM catalog.",
-                "ebay":        None,
             })
             print(f"  [skip] {part_number} — internal Audatex code, not a real OEM number")
         else:
@@ -385,4 +383,21 @@ async def lookup_parts(
                 print(f"     → OEM error ({r['error']}) — querying eBay as fallback...")
                 ebay_result = await ebay_search_part(part_number, descripcion)
 
-            status = r["error"] or
+            status = r["error"] or (f"NOT IN US MARKET" if no_market else f"MSRP:{msrp_s}  Price:{price_s}  Fits:{r['vin_fits']}")
+            print(f"     → {status}")
+
+            results.append({
+                "parte":       part_number,
+                "descripcion": descripcion,
+                "msrp":        r["msrp"],
+                "price":       r["price"],
+                "vin_fits":    r["vin_fits"],
+                "url":         r["url"],
+                "error":       r["error"],
+                "note":        note,
+                "ebay":        ebay_result,
+            })
+
+        await browser.close()
+
+    return results

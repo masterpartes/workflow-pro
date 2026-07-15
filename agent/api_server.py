@@ -8,15 +8,20 @@ Endpoints:
   POST /quote                 → price a list of parts (direct input or image OCR)
   POST /inpart/sync           → login to Inpart, scrape all pending quotations
   POST /inpart/quote-all      → sync + price everything (full batch, use 2x/day)
+  GET  /ebay/marketplace-deletion  → eBay compliance challenge endpoint
+  POST /ebay/marketplace-deletion  → receive eBay account deletion notifications
 
 Authentication:
-  All endpoints (except /health) require header:
+  All endpoints (except /health and /ebay/*) require header:
     X-API-Key: <API_SECRET_KEY env var>
 
 Environment variables required:
-  INPART_USERNAME   — Inpart portal username
-  INPART_PASSWORD   — Inpart portal password
-  API_SECRET_KEY    — shared secret for API auth (set a strong random string)
+  INPART_USERNAME       — Inpart portal username
+  INPART_PASSWORD       — Inpart portal password
+  API_SECRET_KEY        — shared secret for API auth (set a strong random string)
+  EBAY_APP_ID           — eBay Production App ID (optional, enables eBay fallback)
+  EBAY_CERT_ID          — eBay Production Cert ID (optional)
+  EBAY_VERIFICATION_TOKEN — token for eBay marketplace deletion webhook (optional)
 """
 
 import asyncio
@@ -26,11 +31,11 @@ import re
 import time
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from fastapi.responses import JSONResponse
 from inpart_scraper import scrape_pending_quotations
 from oem_service import lookup_parts, brand_from_vin
 from ebay_service import compute_deletion_challenge_response
@@ -115,7 +120,7 @@ async def quote(req: QuoteRequest):
     Price a list of OEM parts.
 
     Input: parts list + VIN (or explicit brand)
-    Output: same parts with msrp, price, vin_fits, url fields added
+    Output: same parts with msrp, price, vin_fits, url, ebay fields added
 
     Used for:
     - Mode 2 (image OCR): Claude extracts part numbers from photo, calls this
@@ -278,4 +283,61 @@ EBAY_ENDPOINT_URL = "https://workflow-pro-production-13ab.up.railway.app/ebay/ma
 
 
 @app.get("/ebay/marketplace-deletion")
-async def ebay_deletion_challenge(cha
+async def ebay_deletion_challenge(challenge_code: str = ""):
+    """
+    eBay endpoint verification handler.
+    eBay sends GET ?challenge_code=xxx — we must respond with the SHA-256 hash.
+    """
+    if not challenge_code:
+        return {"status": "ebay marketplace deletion endpoint active"}
+
+    if not EBAY_VERIFICATION_TOKEN:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "EBAY_VERIFICATION_TOKEN not configured"}
+        )
+
+    challenge_response = compute_deletion_challenge_response(
+        challenge_code, EBAY_VERIFICATION_TOKEN, EBAY_ENDPOINT_URL
+    )
+    return JSONResponse({"challengeResponse": challenge_response})
+
+
+@app.post("/ebay/marketplace-deletion")
+async def ebay_deletion_notification(request: Request):
+    """
+    Receive eBay marketplace account deletion notifications.
+    We are read-only (no eBay seller data stored), so this is a no-op.
+    """
+    payload = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    print(f"[ebay] Received marketplace deletion notification: {payload}")
+    return {"status": "received"}
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def startup():
+    # Validate required env vars
+    missing = []
+    for var in ("INPART_USERNAME", "INPART_PASSWORD", "API_SECRET_KEY"):
+        if not os.environ.get(var):
+            missing.append(var)
+    if missing:
+        print(f"WARNING: Missing environment variables: {', '.join(missing)}")
+    else:
+        print("[startup] All required environment variables are set.")
+
+    # Optional eBay vars
+    ebay_app_id = os.environ.get("EBAY_APP_ID", "")
+    ebay_cert_id = os.environ.get("EBAY_CERT_ID", "")
+    if ebay_app_id and ebay_cert_id:
+        print("[startup] eBay credentials configured.")
+    else:
+        print("[startup] WARNING: EBAY_APP_ID or EBAY_CERT_ID not set — eBay fallback disabled.")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("api_server:app", host="0.0.0.0", port=port, reload=False)
