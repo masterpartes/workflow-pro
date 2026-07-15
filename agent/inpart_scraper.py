@@ -716,3 +716,163 @@ if __name__ == "__main__":
     print("="*60)
     for q in quotations:
         print(json.dumps(q, indent=2, ensure_ascii=False))
+
+
+# ── Diagnostic helper ─────────────────────────────────────────────────────────
+
+async def diagnose_connection(headless: bool = True) -> dict:
+    """
+    Run a login + search and return a full diagnostic report as a dict.
+    Called by GET /inpart/diagnose — no screenshots, all JSON.
+    """
+    from datetime import datetime, timedelta
+
+    info: dict = {
+        "login":          {"success": False, "url_after": "", "error": ""},
+        "search_page":    {"url": "", "title": "", "inputs": [], "tables_before": []},
+        "search_results": {"url": "", "body_snippet": "", "result_text": "",
+                           "tables_after": [], "buscar_error": ""},
+        "fatal": "",
+    }
+
+    if not USERNAME or not PASSWORD:
+        info["fatal"] = "INPART_USERNAME or INPART_PASSWORD not set"
+        return info
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled",
+                  "--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            locale="es-MX",
+            timezone_id="America/Mexico_City",
+        )
+        page = await ctx.new_page()
+        page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+
+        try:
+            # ── Login ──────────────────────────────────────────────────────
+            try:
+                ok = await login(page, debug=False)
+                info["login"]["success"] = ok
+                info["login"]["url_after"] = page.url
+            except Exception as e:
+                info["login"]["error"] = str(e)
+                info["login"]["url_after"] = page.url
+
+            # ── Search page ────────────────────────────────────────────────
+            await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
+            await page.wait_for_timeout(2000)
+            info["search_page"]["url"]   = page.url
+            info["search_page"]["title"] = await page.title()
+
+            # What text inputs exist?
+            inputs_info = await page.evaluate("""
+                () => [...document.querySelectorAll('input[type="text"]')].map(el => ({
+                    id:       el.id,
+                    name:     el.name,
+                    value:    el.value,
+                    readonly: el.readOnly,
+                    disabled: el.disabled,
+                }))
+            """)
+            info["search_page"]["inputs"] = inputs_info
+
+            # What tables exist before search?
+            tables_before = await page.evaluate("""
+                () => [...document.querySelectorAll('table')].map((tbl, i) => ({
+                    index:   i,
+                    rows:    tbl.querySelectorAll('tr').length,
+                    headers: [...tbl.querySelectorAll('th')].map(th => th.innerText.trim()),
+                })).filter(t => t.rows > 0)
+            """)
+            info["search_page"]["tables_before"] = tables_before
+
+            # ── Try date fill + search ─────────────────────────────────────
+            date_from = (datetime.now() - timedelta(days=7)).strftime("%d/%m/%Y")
+            date_to   = datetime.now().strftime("%d/%m/%Y")
+
+            fill_result = await page.evaluate(f"""
+                () => {{
+                    const all = [...document.querySelectorAll('input[type="text"]')];
+                    const fecha = all.filter(el =>
+                        el.id.toLowerCase().includes('fecha') ||
+                        el.name.toLowerCase().includes('fecha') ||
+                        /\\d{{2}}\\/\\d{{2}}\\/\\d{{4}}/.test(el.value)
+                    );
+                    function set(el, v) {{
+                        el.readOnly = false;
+                        el.value = v;
+                        ['input','change','blur'].forEach(n =>
+                            el.dispatchEvent(new Event(n, {{bubbles:true}}))
+                        );
+                    }}
+                    if (fecha.length >= 1) set(fecha[0], '{date_from}');
+                    if (fecha.length >= 2) set(fecha[1], '{date_to}');
+                    return {{ found: fecha.length, ids: fecha.slice(0,2).map(e=>e.id||e.name||'?') }};
+                }}
+            """)
+            info["search_results"]["date_fill"] = fill_result
+
+            # Set status to Pendiente
+            try:
+                selects = page.locator("select")
+                n = await selects.count()
+                for i in range(n):
+                    opts = await selects.nth(i).evaluate(
+                        "el => Array.from(el.options).map(o=>({v:o.value,t:o.text}))"
+                    )
+                    for opt in opts:
+                        if "pendiente" in opt.get("t","").lower():
+                            await selects.nth(i).select_option(value=opt["v"])
+                            break
+            except Exception:
+                pass
+
+            # Click Buscar
+            try:
+                await page.locator("input[value='Buscar' i]").first.click(timeout=5_000)
+                await page.wait_for_timeout(4000)
+            except Exception as e:
+                info["search_results"]["buscar_error"] = str(e)
+
+            info["search_results"]["url"] = page.url
+            body = await page.inner_text("body")
+            info["search_results"]["body_snippet"] = body[:1500]
+
+            # Look for "Resultado de la Búsqueda" text
+            import re as _re
+            m = _re.search(r'resultado[^:\n]*:\s*\d+', body, _re.IGNORECASE)
+            if m:
+                info["search_results"]["result_text"] = m.group(0)
+
+            # Tables after search
+            tables_after = await page.evaluate("""
+                () => [...document.querySelectorAll('table')].map((tbl, i) => {
+                    const rows = [...tbl.querySelectorAll('tr')];
+                    return {
+                        index:      i,
+                        rows:       rows.length,
+                        headers:    [...tbl.querySelectorAll('th')].map(th=>th.innerText.trim()),
+                        first_data: rows.slice(0,3).map(r=>
+                            [...r.querySelectorAll('td')].map(td=>td.innerText.trim().substring(0,40))
+                        ),
+                    };
+                }).filter(t => t.rows > 0)
+            """)
+            info["search_results"]["tables_after"] = tables_after
+
+        except Exception as e:
+            info["fatal"] = str(e)
+        finally:
+            await browser.close()
+
+    return info

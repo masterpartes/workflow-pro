@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from inpart_scraper import scrape_pending_quotations
+from inpart_scraper import scrape_pending_quotations, diagnose_connection
 from oem_service import lookup_parts, brand_from_vin
 from ebay_service import compute_deletion_challenge_response
 
@@ -271,6 +271,20 @@ async def inpart_quote_all(req: InpartQuoteAllRequest):
     }
 
 
+@app.get("/inpart/diagnose", dependencies=[Depends(verify_api_key)])
+async def inpart_diagnose():
+    """
+    Diagnostic endpoint: runs a real login + search and returns exactly what
+    the scraper sees — page URL, inputs, tables, result text.
+    Use this to debug why the scraper returns 0 quotations.
+    """
+    try:
+        result = await diagnose_connection(headless=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return result
+
+
 # ── eBay marketplace account deletion webhook ─────────────────────────────────
 # Required for eBay production API compliance.
 # eBay sends a GET with ?challenge_code=xxx for verification,
@@ -329,7 +343,7 @@ async def startup():
         print("[startup] All required environment variables are set.")
 
     # Optional eBay vars
-    ebay_app_id = os.environ.get("EBAY_APP_ID", "")
+    ebay_app_id  = os.environ.get("EBAY_APP_ID", "")
     ebay_cert_id = os.environ.get("EBAY_CERT_ID", "")
     if ebay_app_id and ebay_cert_id:
         print("[startup] eBay credentials configured.")
