@@ -103,6 +103,13 @@ _PS_ITEMPROP_RE = re.compile(
     r"itemprop=[\"']price[\"'][^>]*content=[\"']([0-9.]+)[\"']", re.I
 )
 
+# PartSouq regex patterns (server-side rendered HTML)
+# Cards are split by class="product-v2-card" boundaries.
+_PSQ_PN_RE    = re.compile(r"Part number:\s*(\S+)", re.I)
+_PSQ_MAKE_RE  = re.compile(r"Make:\s*([^\n<]+)", re.I)
+_PSQ_PRICE_RE = re.compile(r'class="price-new">([\d.]+)', re.I)
+_PSQ_AVAIL_RE = re.compile(r"Availability:\s*(\d+)", re.I)
+
 _HTTP_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -240,6 +247,107 @@ async def _fetch_parts_site(
     except Exception as e:
         result["error"] = str(e)
         print(f"    [OEM-HTTP] error for {pn_clean}: {e}")
+
+    return result
+
+
+async def _fetch_partsouq(
+    client: httpx.AsyncClient,
+    part_number: str,
+    brand: Optional[str] = None,
+) -> dict:
+    """
+    Look up a part on PartSouq.com — used for non-US VINs and unknown brands.
+    Server-side rendered HTML; no Cloudflare. Prices in USD.
+    URL: /en/search/all?q={PN_NO_DASHES}
+    Returns: price (lowest matching OEM price), make, url, error.
+    Note: PartSouq does not publish MSRP; msrp will always be None here.
+    """
+    pn_clean = re.sub(r"[-\s]", "", part_number).upper()
+    url = f"https://partsouq.com/en/search/all?q={pn_clean}"
+    result: dict = {"price": None, "msrp": None, "make": None, "url": url, "error": None}
+
+    try:
+        print(f"    [PSQ] GET {url}")
+        resp = await client.get(url, follow_redirects=True, timeout=20.0)
+
+        if resp.status_code != 200:
+            result["error"] = f"http_{resp.status_code}"
+            print(f"    [PSQ] HTTP {resp.status_code} for {pn_clean}")
+            return result
+
+        html = resp.text
+
+        # Cloudflare detection
+        if any(x in html.lower() for x in [
+            "cloudflare", "verifies you are not a bot", "security verification",
+        ]):
+            result["error"] = "cloudflare_block"
+            print(f"    [PSQ] Cloudflare block for {pn_clean}")
+            return result
+
+        if "Nothing found" in html:
+            result["error"] = "not_found"
+            print(f"    [PSQ] not found: {pn_clean}")
+            return result
+
+        # Split into product cards — each starts with class="product-v2-card"
+        cards = html.split('class="product-v2-card"')
+
+        best_price: Optional[float] = None
+        best_make: Optional[str] = None
+
+        for card in cards[1:]:  # cards[0] is the HTML before the first card
+            m_pn = _PSQ_PN_RE.search(card)
+            if not m_pn:
+                continue
+            card_pn = re.sub(r"[-\s]", "", m_pn.group(1)).upper()
+            if card_pn != pn_clean:
+                continue  # skip substitutions
+
+            m_price = _PSQ_PRICE_RE.search(card)
+            if not m_price:
+                continue
+            price = float(m_price.group(1))
+
+            m_make = _PSQ_MAKE_RE.search(card)
+            make = m_make.group(1).strip() if m_make else None
+
+            m_avail = _PSQ_AVAIL_RE.search(card)
+            avail = int(m_avail.group(1)) if m_avail else 0
+
+            brand_match = bool(brand and make and brand.lower() in make.lower())
+
+            # Priority: OEM brand match → any in-stock → any exact PN match
+            if brand_match:
+                # Among brand matches, prefer in-stock and lower price
+                if best_make is None or not (brand and best_make and brand.lower() in best_make.lower()):
+                    best_price = price
+                    best_make = make
+                elif avail > 0 and price < (best_price or 1e9):
+                    best_price = price
+                    best_make = make
+            elif best_price is None:
+                best_price = price
+                best_make = make
+            elif avail > 0 and price < best_price:
+                best_price = price
+                best_make = make
+
+        if best_price is not None:
+            result["price"] = best_price
+            result["make"] = best_make
+            print(f"    [PSQ] {pn_clean}: price=${best_price}  make={best_make}")
+        else:
+            result["error"] = "no_price"
+            print(f"    [PSQ] no price for {pn_clean}")
+
+    except httpx.TimeoutException:
+        result["error"] = "timeout"
+        print(f"    [PSQ] timeout for {pn_clean}")
+    except Exception as e:
+        result["error"] = str(e)
+        print(f"    [PSQ] error for {pn_clean}: {e}")
 
     return result
 
@@ -495,7 +603,7 @@ async def lookup_parts(
     if effective_brand in _PARTS_SITES:
         return await _lookup_parts_via_httpx(parts, vin, effective_brand)
 
-    # Unknown brand: eBay only
+    # Unknown brand: PartSouq + eBay concurrently
     if not base_url:
         part_list = [
             (
@@ -507,25 +615,37 @@ async def lookup_parts(
         wmi = vin[:3] if vin else "?"
         print(
             f"     -> unknown_brand (WMI: {wmi}) -- "
-            f"querying eBay for {len(part_list)} parts concurrently..."
+            f"querying PartSouq + eBay for {len(part_list)} parts concurrently..."
         )
-        ebay_results = await asyncio.gather(*[
-            ebay_search_part(pn, desc, brand="")
-            for pn, desc in part_list
-        ])
+        async with httpx.AsyncClient(headers=_HTTP_HEADERS) as client:
+            psq_tasks  = [_fetch_partsouq(client, pn) for pn, _ in part_list]
+            ebay_tasks = [ebay_search_part(pn, desc, brand="") for pn, desc in part_list]
+            psq_results, ebay_results = await asyncio.gather(
+                asyncio.gather(*psq_tasks),
+                asyncio.gather(*ebay_tasks),
+            )
         return [
             {
                 "parte":       pn,
                 "descripcion": desc,
                 "msrp":        None,
-                "price":       None,
+                "price":       psq["price"],
                 "vin_fits":    "N/A",
-                "url":         "",
-                "error":       f"unknown_brand (VIN WMI: {wmi})",
-                "note":        "Brand not in US OEM catalog -- eBay searched as fallback.",
+                "url":         psq["url"],
+                "error":       psq["error"],
+                "note":        (
+                    f"Non-US VIN (WMI: {wmi}). "
+                    f"OEM price from PartSouq"
+                    + (f" (Make: {psq['make']})" if psq.get("make") else "")
+                    + "."
+                ) if psq["price"] else f"Non-US VIN (WMI: {wmi}) -- part not on PartSouq.",
                 "ebay":        ebay_results[i],
             }
-            for i, (pn, desc) in enumerate(part_list)
+            for i, (pn, desc, psq) in enumerate(
+                zip([pn for pn, _ in part_list],
+                    [d for _, d in part_list],
+                    psq_results)
+            )
         ]
 
     # Other brands: Playwright on oempartsonline.com
@@ -630,7 +750,7 @@ async def lookup_parts(
         no_market = (r["error"] is None and r["msrp"] is None and r["price"] is None)
         note = (
             "Part not listed on oempartsonline.com for this brand. "
-                 "Likely not sold in the US market (e.g. Hilux, Fortuner, "
+            "Likely not sold in the US market (e.g. Hilux, Fortuner, "
             "Ecuador/LatAm-spec vehicle)."
         ) if no_market else None
 
@@ -653,4 +773,3 @@ async def lookup_parts(
         })
 
     return results
-
