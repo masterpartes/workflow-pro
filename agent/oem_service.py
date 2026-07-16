@@ -162,15 +162,17 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
         t1 = __import__("time").monotonic()
         print(f"    URL after load ({t1-t0:.1f}s): {page.url}")
 
-        # If still on search results, navigate to the matching product page
+        # If still on search results, navigate to the matching product page.
+        # React renders product links asynchronously after the search API call
+        # completes — 3 s was too short.  Give it up to 12 s to appear.
         if "/search" in page.url:
             try:
                 pn_lower = part_number.lower()
                 pn_nodash = pn_lower.replace("-", "").replace(" ", "")
                 link = page.locator(
-                    f'a[href*="{pn_nodash}"], a[href*="{pn_lower}"], a[href*="{part_number.upper()}"]' 
+                    f'a[href*="{pn_nodash}"], a[href*="{pn_lower}"], a[href*="{part_number.upper()}"]'
                 ).first
-                href = await link.get_attribute("href", timeout=3_000)
+                href = await link.get_attribute("href", timeout=12_000)
                 if href:
                     target = href if href.startswith("http") else base_url.rstrip("/") + href
                     print(f"    → product page: {target}")
@@ -182,6 +184,13 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
             except Exception as nav_e:
                 t2 = __import__("time").monotonic()
                 print(f"    no product link ({t2-t0:.1f}s total): {type(nav_e).__name__}")
+                # Log visible page text to diagnose bot-block vs slow render
+                try:
+                    body_text = await page.locator("body").inner_text(timeout=2_000)
+                    snippet = body_text[:400].replace("\n", " ").strip()
+                    print(f"    page text: {snippet}")
+                except Exception:
+                    pass
 
         html = await page.content()
         on_product_page = "/oem-parts/" in page.url
