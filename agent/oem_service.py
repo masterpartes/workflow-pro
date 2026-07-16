@@ -268,6 +268,7 @@ async def _lookup_ford_parts(parts: list, vin: Optional[str]) -> list[dict]:
             "error":       fpg["error"],
             "note":        None,
             "ebay":        ebay,
+            "_debug":      fpg.get("_debug"),
         })
 
     return results
