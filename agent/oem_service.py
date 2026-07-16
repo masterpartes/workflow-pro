@@ -119,6 +119,29 @@ _HTTP_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Full browser-like headers for PartSouq (stricter bot detection)
+_PSQ_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language":        "en-US,en;q=0.9",
+    "Accept-Encoding":        "gzip, deflate, br",
+    "Connection":             "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest":         "document",
+    "Sec-Fetch-Mode":         "navigate",
+    "Sec-Fetch-Site":         "none",
+    "Sec-Fetch-User":         "?1",
+    "Cache-Control":          "max-age=0",
+    "DNT":                    "1",
+}
+
 
 def is_internal_audatex_code(part_number: str) -> bool:
     return bool(_INTERNAL_CODE_RE.match(part_number.strip()))
@@ -271,6 +294,12 @@ async def _fetch_partsouq(
         print(f"    [PSQ] GET {url}")
         resp = await client.get(url, follow_redirects=True, timeout=20.0)
 
+        if resp.status_code == 403:
+            # Could be Cloudflare silent block or IP ban
+            result["error"] = "cloudflare_403"
+            print(f"    [PSQ] 403 Forbidden (Cloudflare/IP block) for {pn_clean}")
+            return result
+
         if resp.status_code != 200:
             result["error"] = f"http_{resp.status_code}"
             print(f"    [PSQ] HTTP {resp.status_code} for {pn_clean}")
@@ -278,9 +307,10 @@ async def _fetch_partsouq(
 
         html = resp.text
 
-        # Cloudflare detection
+        # Cloudflare detection in body (challenge pages)
         if any(x in html.lower() for x in [
             "cloudflare", "verifies you are not a bot", "security verification",
+            "just a moment", "enable javascript and cookies",
         ]):
             result["error"] = "cloudflare_block"
             print(f"    [PSQ] Cloudflare block for {pn_clean}")
@@ -617,7 +647,7 @@ async def lookup_parts(
             f"     -> unknown_brand (WMI: {wmi}) -- "
             f"querying PartSouq + eBay for {len(part_list)} parts concurrently..."
         )
-        async with httpx.AsyncClient(headers=_HTTP_HEADERS) as client:
+        async with httpx.AsyncClient(headers=_PSQ_HEADERS, http2=True) as client:
             psq_tasks  = [_fetch_partsouq(client, pn) for pn, _ in part_list]
             ebay_tasks = [ebay_search_part(pn, desc, brand="") for pn, desc in part_list]
             psq_results, ebay_results = await asyncio.gather(
@@ -739,7 +769,6 @@ async def lookup_parts(
         await browser.close()
 
     ebay_results = await asyncio.gather(*ebay_tasks)
-
     for (part_number, descripcion, r), ebay_result in zip(oem_scrape_results, ebay_results):
         if not part_number:
             continue
