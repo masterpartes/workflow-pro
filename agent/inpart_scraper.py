@@ -679,7 +679,7 @@ async def _scrape_detail_tabs(page, cotizacion_id: str, debug: bool,
             # wait_for_function(rows > 2) fires immediately on structural
             # layout rows before data arrives; networkidle fires before the
             # XHR even starts. A fixed 2500 ms reliably covers both.
-            await page.wait_for_timeout(2500)
+            await page.wait_for_timeout(3500)
 
             if debug:
                 await _screenshot(page, f"09_cot{cotizacion_id}_datos")
