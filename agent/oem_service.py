@@ -91,7 +91,14 @@ _INTERNAL_CODE_RE = re.compile(r"^\d{12,16}$")
 # Price patterns for the parts-site scrapers (same platform across all brands).
 # Searched on comment-stripped HTML; each pattern is independent.
 _PS_MSRP_RE     = re.compile(r"MSRP:[\s\S]{0,150}?\$([\d,]+\.?\d{0,2})", re.I)
-_PS_META_RE     = re.compile(r"\$([\d,]+\.?\d{0,2})\s+online at", re.I)   # any site
+# Meta-description sale price: two formats used across sister sites:
+#   FordPartsGiant:   "$138.89 online at FordPartsGiant"
+#   ToyotaPartsDeal:  "... for $4.68. All parts ..."
+_PS_META_RE     = re.compile(
+    r"\$([\d,]+\.?\d{0,2})\s+online\s+at"   # FordPartsGiant style
+    r"|for\s+\$([\d,]+\.?\d{0,2})",           # ToyotaPartsDeal style
+    re.I
+)
 _PS_ITEMPROP_RE = re.compile(
     r"itemprop=[\"']price[\"'][^>]*content=[\"']([0-9.]+)[\"']", re.I
 )
@@ -187,22 +194,29 @@ async def _fetch_parts_site(
         if m_msrp:
             result["msrp"] = float(m_msrp.group(1).replace(",", ""))
 
-        # Sale price: meta-description is cleanest (no hydration comments)
+        # Sale price: meta-description is cleanest (no hydration comments).
+        # Two regex groups: group(1) = "online at" style, group(2) = "for $X" style.
         m_meta = _PS_META_RE.search(html)
         if m_meta:
-            result["price"] = float(m_meta.group(1).replace(",", ""))
+            raw = m_meta.group(1) or m_meta.group(2)
+            result["price"] = float(raw.replace(",", ""))
         else:
             m_ip = _PS_ITEMPROP_RE.search(html_clean)
             if m_ip:
                 result["price"] = float(m_ip.group(1))
 
-        # Fallback: compute MSRP from "You Save: $xx.xx (xx%)" if MSRP regex missed
-        if result["price"] is not None and result["msrp"] is None:
-            m_save = re.search(r"You Save:\s*\$([\d,]+\.?\d{0,2})", html_clean, re.I)
-            if m_save:
-                savings = float(m_save.group(1).replace(",", ""))
+        # "You Save" fallback — works both ways:
+        m_save = re.search(r"You Save:\s*\$([\d,]+\.?\d{0,2})", html_clean, re.I)
+        if m_save:
+            savings = float(m_save.group(1).replace(",", ""))
+            # Forward: have price, missing MSRP → MSRP = price + savings
+            if result["price"] is not None and result["msrp"] is None:
                 result["msrp"] = round(result["price"] + savings, 2)
-                print(f"    [OEM-HTTP] MSRP from You Save: {savings} -> {result['msrp']}")
+                print(f"    [OEM-HTTP] MSRP from You Save: +{savings} -> {result['msrp']}")
+            # Reverse: have MSRP, missing price → price = MSRP - savings
+            elif result["msrp"] is not None and result["price"] is None:
+                result["price"] = round(result["msrp"] - savings, 2)
+                print(f"    [OEM-HTTP] price from You Save: {result['msrp']}-{savings} -> {result['price']}")
 
         if result["price"] is not None:
             print(f"    [OEM-HTTP] {pn_clean}: price=${result['price']}  MSRP=${result['msrp']}")
@@ -616,7 +630,7 @@ async def lookup_parts(
         no_market = (r["error"] is None and r["msrp"] is None and r["price"] is None)
         note = (
             "Part not listed on oempartsonline.com for this brand. "
-               "Likely not sold in the US market (e.g. Hilux, Fortuner, "
+                 "Likely not sold in the US market (e.g. Hilux, Fortuner, "
             "Ecuador/LatAm-spec vehicle)."
         ) if no_market else None
 
@@ -628,7 +642,7 @@ async def lookup_parts(
 
         results.append({
             "parte":       part_number,
-               "descripcion": descripcion,
+            "descripcion": descripcion,
             "msrp":        r["msrp"],
             "price":       r["price"],
             "vin_fits":    r["vin_fits"],
@@ -639,3 +653,4 @@ async def lookup_parts(
         })
 
     return results
+
