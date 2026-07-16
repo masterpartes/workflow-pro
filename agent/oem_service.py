@@ -184,58 +184,64 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
                 print(f"    no product link ({t2-t0:.1f}s total): {type(nav_e).__name__}")
 
         html = await page.content()
+        on_product_page = "/oem-parts/" in page.url
 
-        # ── MSRP ─────────────────────────────────────────────────────────
-        m = re.search(r"MSRP[\s\S]{0,40}\$([\d,]+\.?\d{0,2})", html, re.I)
-        if m:
-            result["msrp"] = float(m.group(1).replace(",", ""))
+        # ── MSRP + price ─────────────────────────────────────────────────
+        # Only attempt CSS/regex price extraction when we actually reached
+        # a product page.  On the search results page every selector times
+        # out (2 s each × 12 selectors = 24 s wasted per part).
+        if on_product_page:
+            m = re.search(r"MSRP[\s\S]{0,40}\$([\d,]+\.?\d{0,2})", html, re.I)
+            if m:
+                result["msrp"] = float(m.group(1).replace(",", ""))
 
-        # ── Sale / dealer price ───────────────────────────────────────────
-        price_selectors = [
-            ".price-now", ".sale-price", ".your-price", ".dealer-price",
-            '[class*="price-sale"]', '[class*="sale_price"]', '[class*="price--sale"]',
-            ".product-price strong", ".price strong",
-            "[data-price]", ".add-to-cart-price", ".buy-price",
-            ".price-block .price",
-        ]
-        for sel in price_selectors:
-            try:
-                txt = await page.locator(sel).first.inner_text(timeout=2_000)
-                p = parse_price(txt)
-                if p and p > 0:
-                    result["price"] = p
-                    break
-            except Exception:
-                continue
-
-        # Fallback: pick the lowest dollar amount on page (≤ MSRP if known)
-        if not result["price"]:
-            amounts = [
-                float(x.replace(",", ""))
-                for x in re.findall(r"\$([\d,]+\.\d{2})", html)
-                if 0 < float(x.replace(",", "")) < 99_999
+            price_selectors = [
+                ".price-now", ".sale-price", ".your-price", ".dealer-price",
+                '[class*="price-sale"]', '[class*="sale_price"]', '[class*="price--sale"]',
+                ".product-price strong", ".price strong",
+                "[data-price]", ".add-to-cart-price", ".buy-price",
+                ".price-block .price",
             ]
-            pts = sorted(set(amounts))
-            if pts:
-                if result["msrp"]:
-                    under = [p for p in pts if p <= result["msrp"]]
-                    result["price"] = min(under) if under else pts[0]
-                else:
-                    result["price"] = pts[0]
+            for sel in price_selectors:
+                try:
+                    txt = await page.locator(sel).first.inner_text(timeout=500)
+                    p = parse_price(txt)
+                    if p and p > 0:
+                        result["price"] = p
+                        break
+                except Exception:
+                    continue
 
-        # ── VIN fitment ───────────────────────────────────────────────────
-        if vin:
-            try:
-                body = (await page.inner_text("body")).lower()
-                if any(x in body for x in ["does not fit", "not compatible", "does not match"]):
-                    result["vin_fits"] = "NO"
-                elif any(x in body for x in
-                         ["fits your", "compatible with your", "guaranteed fit", "this part fits"]):
-                    result["vin_fits"] = "YES"
-                elif vin.lower() in body:
-                    result["vin_fits"] = "YES"
-            except Exception:
-                pass
+            # Fallback: lowest dollar amount on page
+            if not result["price"]:
+                amounts = [
+                    float(x.replace(",", ""))
+                    for x in re.findall(r"\$([\d,]+\.\d{2})", html)
+                    if 0 < float(x.replace(",", "")) < 99_999
+                ]
+                pts = sorted(set(amounts))
+                if pts:
+                    if result["msrp"]:
+                        under = [p for p in pts if p <= result["msrp"]]
+                        result["price"] = min(under) if under else pts[0]
+                    else:
+                        result["price"] = pts[0]
+
+            # ── VIN fitment ───────────────────────────────────────────────
+            if vin:
+                try:
+                    body = (await page.inner_text("body")).lower()
+                    if any(x in body for x in ["does not fit", "not compatible", "does not match"]):
+                        result["vin_fits"] = "NO"
+                    elif any(x in body for x in
+                             ["fits your", "compatible with your", "guaranteed fit", "this part fits"]):
+                        result["vin_fits"] = "YES"
+                    elif vin.lower() in body:
+                        result["vin_fits"] = "YES"
+                except Exception:
+                    pass
+        else:
+            print(f"    stuck on search page — skipping price/MSRP extraction")
 
     except PlaywrightTimeout:
         result["error"] = "TIMEOUT"

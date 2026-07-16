@@ -213,8 +213,13 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
         # ── genuine (brand-filtered) ──────────────────────────────────────
         if len(responses) > 1:
             resp2 = responses[1]
-            if not isinstance(resp2, Exception) and resp2.status_code == 200:
-                g_items = resp2.json().get("itemSummaries", [])
+            if isinstance(resp2, Exception):
+                print(f"[ebay-genuine] {part_number}: call failed — {resp2}")
+            elif resp2.status_code == 200:
+                g_data = resp2.json()
+                g_items = g_data.get("itemSummaries", [])
+                g_total = g_data.get("total", 0)
+                print(f"[ebay-genuine] {part_number}: Brand:{genuine_brand} → {g_total} listings")
                 if g_items:
                     gps = []
                     for it in g_items:
@@ -224,6 +229,8 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
                             continue
                     if gps:
                         result["genuine"] = _bucket_stats(gps)
+            else:
+                print(f"[ebay-genuine] {part_number}: HTTP {resp2.status_code}")
 
         g = result["genuine"]; a = result["all"]
         print(f"[ebay] {part_number}: total={result['listing_count']} | "
