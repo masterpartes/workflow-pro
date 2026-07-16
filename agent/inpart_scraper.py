@@ -623,8 +623,11 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
 
     # ── We navigated directly (Strategy 1 or 2a) — scrape main page ──────────
     actual_url_check = page.url
-    if "AudaPartsWebApp" not in actual_url_check:
-        print(f"[inpart] WARNING: landed on wrong page ({actual_url_check}) for COT {cotizacion_id}")
+    # Must land on frmQuotationSupplierAnswer — anything else is wrong:
+    # AudaPartsSite/ = login page, frmQuotationSupplierSearch = search page,
+    # frmControlPanelSupplier = home, etc.
+    if "frmQuotationSupplierAnswer" not in actual_url_check:
+        print(f"[inpart] WARNING: not on detail page ({actual_url_check}) for COT {cotizacion_id}")
         return {
             "cotizacion_id": cotizacion_id,
             "detail_url": actual_url_check,
@@ -1080,6 +1083,15 @@ async def diagnose_connection(headless: bool = True) -> dict:
                     };
                 }).filter(t => t.rows > 0)
             """)
+            info["search_results"]["tables_after"] = tables_after
+
+        except Exception as e:
+            info["fatal"] = str(e)
+        finally:
+            await browser.close()
+
+    return info
+
             info["search_results"]["tables_after"] = tables_after
 
         except Exception as e:
