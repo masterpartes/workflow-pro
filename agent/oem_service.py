@@ -183,6 +183,15 @@ async def _fetch_fordpartsgiant(client: httpx.AsyncClient, part_number: str) -> 
                 result["msrp"] = round(result["price"] + savings, 2)
                 print(f"    [FPG] MSRP computed from You Save: {savings} -> msrp={result['msrp']}")
 
+        # Temp debug: expose raw context in the result so we can see it via API
+        msrp_idx2 = html.find("MSRP")
+        result["_debug"] = {
+            "html_len": len(html),
+            "msrp_found": msrp_idx2 >= 0,
+            "msrp_context": repr(html[msrp_idx2:msrp_idx2+250]) if msrp_idx2 >= 0 else None,
+            "you_save_found": bool(__import__("re").search(r"You Save:", html, __import__("re").I)),
+        }
+
         if result["price"] is not None:
             print(f"    [FPG] {pn_clean}: price=${result['price']}  MSRP=${result['msrp']}")
             return result
