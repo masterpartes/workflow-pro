@@ -675,19 +675,11 @@ async def _scrape_detail_tabs(page, cotizacion_id: str, debug: bool,
         datos_tab = page.locator(f"#{_TAB_DATOS_ID}")
         if await datos_tab.count() > 0:
             await datos_tab.click(timeout=5_000)
-            # Wait until the Datos panel actually has rows in the DOM.
-            # This is more reliable than a fixed delay or networkidle —
-            # UpdatePanel XHRs can fire slightly after the click event,
-            # so a fixed wait may be too short, and networkidle may fire
-            # before the XHR even starts.
-            try:
-                await page.wait_for_function(
-                    f"document.getElementById('{_PANEL_DATOS_ID}') && "
-                    f"document.getElementById('{_PANEL_DATOS_ID}').querySelectorAll('tr').length > 2",
-                    timeout=8_000,
-                )
-            except Exception:
-                await page.wait_for_timeout(2500)
+            # Fixed wait for UpdatePanel XHR to complete.
+            # wait_for_function(rows > 2) fires immediately on structural
+            # layout rows before data arrives; networkidle fires before the
+            # XHR even starts. A fixed 2500 ms reliably covers both.
+            await page.wait_for_timeout(2500)
 
             if debug:
                 await _screenshot(page, f"09_cot{cotizacion_id}_datos")
