@@ -154,43 +154,33 @@ async def _fetch_fordpartsgiant(client: httpx.AsyncClient, part_number: str) -> 
             return result
 
         html = resp.text
+        # Strip React hydration comments (<!-- -->) so price regexes work.
+        # e.g. MSRP: <span>$<!-- -->203.05</span> → MSRP: <span>$203.05</span>
+        html_clean = re.sub(r"<!--.*?-->", "", html)
 
         # MSRP: search for literal "MSRP:" followed by a price.
-        # Log context around "MSRP" so we can see the actual HTML structure.
-        msrp_idx = html.find("MSRP")
-        if msrp_idx >= 0:
-            print(f"    [FPG] MSRP context: {repr(html[msrp_idx:msrp_idx+200])}")
-            m_msrp = _FPG_MSRP_RE.search(html)
-            if m_msrp:
-                result["msrp"] = float(m_msrp.group(1).replace(",", ""))
+        m_msrp = _FPG_MSRP_RE.search(html_clean)
+        if m_msrp:
+            result["msrp"] = float(m_msrp.group(1).replace(",", ""))
         else:
-            print(f"    [FPG] 'MSRP' not found in HTML for {pn_clean}")
+            print(f"    [FPG] MSRP regex no match for {pn_clean}")
 
-        # Sale price: cleanest source is the meta-description
+        # Sale price: cleanest source is the meta-description (no comments there)
         m_meta = _FPG_META_RE.search(html)
         if m_meta:
             result["price"] = float(m_meta.group(1).replace(",", ""))
         else:
-            m_ip = _FPG_ITEMPROP_RE.search(html)
+            m_ip = _FPG_ITEMPROP_RE.search(html_clean)
             if m_ip:
                 result["price"] = float(m_ip.group(1))
 
         # Fallback: compute MSRP from "You Save: $xx.xx (xx%)" if regex missed it
         if result["price"] is not None and result["msrp"] is None:
-            m_save = re.search(r"You Save:\s*\$([\d,]+\.?\d{0,2})", html, re.I)
+            m_save = re.search(r"You Save:\s*\$([\d,]+\.?\d{0,2})", html_clean, re.I)
             if m_save:
                 savings = float(m_save.group(1).replace(",", ""))
                 result["msrp"] = round(result["price"] + savings, 2)
-                print(f"    [FPG] MSRP computed from You Save: {savings} -> msrp={result['msrp']}")
-
-        # Temp debug: expose raw context in the result so we can see it via API
-        msrp_idx2 = html.find("MSRP")
-        result["_debug"] = {
-            "html_len": len(html),
-            "msrp_found": msrp_idx2 >= 0,
-            "msrp_context": repr(html[msrp_idx2:msrp_idx2+250]) if msrp_idx2 >= 0 else None,
-            "you_save_found": bool(__import__("re").search(r"You Save:", html, __import__("re").I)),
-        }
+                print(f"    [FPG] MSRP from You Save fallback: {savings} -> msrp={result['msrp']}")
 
         if result["price"] is not None:
             print(f"    [FPG] {pn_clean}: price=${result['price']}  MSRP=${result['msrp']}")
@@ -268,7 +258,6 @@ async def _lookup_ford_parts(parts: list, vin: Optional[str]) -> list[dict]:
             "error":       fpg["error"],
             "note":        None,
             "ebay":        ebay,
-            "_debug":      fpg.get("_debug"),
         })
 
     return results
