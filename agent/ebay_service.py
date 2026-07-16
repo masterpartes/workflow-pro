@@ -112,10 +112,9 @@ async def search_part(part_number: str, descripcion: str = "") -> dict:
         result["error"] = "no_credentials"
         return result
 
+    # Use part number only — descriptions from Inpart are in Spanish
+    # (e.g. "MODULO ELECTRONICO FARO") and eBay US listings won't match them.
     query = part_number.strip()
-    if descripcion:
-        extra = " ".join(descripcion.split()[:3])
-        query = f"{query} {extra}"
 
     result["url"] = (
         "https://www.ebay.com/sch/6028/i.html"

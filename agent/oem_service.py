@@ -150,37 +150,56 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
         print(f"    GET {search_url}")
         await page.goto(search_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
-        # Extra wait for JS-heavy sites (mopar especially needs networkidle)
+        # Wait for RevolutionParts JS to load prices.
+        # Mopar needs networkidle; all others: wait for MSRP text to appear
+        # (prices load lazily via AJAX — a fixed wait is too unreliable).
         if "mopar" in base_url:
             try:
                 await page.wait_for_load_state("networkidle", timeout=12_000)
             except Exception:
                 await page.wait_for_timeout(6_000)
         else:
-            await page.wait_for_timeout(3500)
+            # Wait up to 8s for any dollar amount to appear on the page
+            try:
+                await page.wait_for_function(
+                    "document.body.innerText.includes('$')",
+                    timeout=8_000,
+                )
+            except Exception:
+                await page.wait_for_timeout(4_000)
         result["url"] = page.url
+        print(f"    URL after wait: {page.url}")
 
-        # If on search results, try to navigate to the matching product page
+        # If still on search results, navigate to the matching product page
         if "/search" in page.url:
             try:
                 pn_lower = part_number.lower()
+                # Strip dashes for slug matching (FB5Z-13008-B → fb5z13008b)
+                pn_nodash = pn_lower.replace("-", "").replace(" ", "")
                 link = page.locator(
-                    f'a[href*="{pn_lower}"], a[href*="{part_number.upper()}"]'
+                    f'a[href*="{pn_nodash}"], a[href*="{pn_lower}"], a[href*="{part_number.upper()}"]' 
                 ).first
                 href = await link.get_attribute("href", timeout=6_000)
                 if href:
                     target = href if href.startswith("http") else base_url.rstrip("/") + href
+                    print(f"    → navigating to product: {target}")
                     await page.goto(target, wait_until="domcontentloaded", timeout=timeout_ms)
-                    await page.wait_for_timeout(2500)
+                    try:
+                        await page.wait_for_function(
+                            "document.body.innerText.includes('$')",
+                            timeout=8_000,
+                        )
+                    except Exception:
+                        await page.wait_for_timeout(4_000)
                     result["url"] = page.url
                 else:
                     # Click first product link
                     first = page.locator('a[href*="oem-parts"]').first
                     await first.click(timeout=5_000)
-                    await page.wait_for_timeout(2500)
+                    await page.wait_for_timeout(4_000)
                     result["url"] = page.url
-            except Exception:
-                pass  # Stay on search page, try to parse prices there
+            except Exception as nav_e:
+                print(f"    search nav error: {nav_e}")
 
         html = await page.content()
 
