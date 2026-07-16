@@ -5,6 +5,7 @@ oem_service.py - OEM parts price lookup service
 import asyncio
 import re
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -167,6 +168,13 @@ async def _fetch_parts_site(
         if resp.status_code != 200:
             result["error"] = f"http_{resp.status_code}"
             print(f"    [OEM-HTTP] HTTP {resp.status_code} for {pn_clean}")
+            return result
+
+        # Detect homepage redirect: part not found → site redirects to /
+        _path = urlparse(str(resp.url)).path
+        if _path in ("/", ""):
+            result["error"] = "not_found"
+            print(f"    [OEM-HTTP] homepage redirect (not found) for {pn_clean}")
             return result
 
         html = resp.text
@@ -620,7 +628,7 @@ async def lookup_parts(
 
         results.append({
             "parte":       part_number,
-            "descripcion": descripcion,
+               "descripcion": descripcion,
             "msrp":        r["msrp"],
             "price":       r["price"],
             "vin_fits":    r["vin_fits"],
