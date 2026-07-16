@@ -155,10 +155,16 @@ async def _fetch_fordpartsgiant(client: httpx.AsyncClient, part_number: str) -> 
 
         html = resp.text
 
-        # MSRP: appears as literal "MSRP: $xxx" in the HTML text
-        m_msrp = _FPG_MSRP_RE.search(html)
-        if m_msrp:
-            result["msrp"] = float(m_msrp.group(1).replace(",", ""))
+        # MSRP: search for literal "MSRP:" followed by a price.
+        # Log context around "MSRP" so we can see the actual HTML structure.
+        msrp_idx = html.find("MSRP")
+        if msrp_idx >= 0:
+            print(f"    [FPG] MSRP context: {repr(html[msrp_idx:msrp_idx+200])}")
+            m_msrp = _FPG_MSRP_RE.search(html)
+            if m_msrp:
+                result["msrp"] = float(m_msrp.group(1).replace(",", ""))
+        else:
+            print(f"    [FPG] 'MSRP' not found in HTML for {pn_clean}")
 
         # Sale price: cleanest source is the meta-description
         m_meta = _FPG_META_RE.search(html)
@@ -168,6 +174,14 @@ async def _fetch_fordpartsgiant(client: httpx.AsyncClient, part_number: str) -> 
             m_ip = _FPG_ITEMPROP_RE.search(html)
             if m_ip:
                 result["price"] = float(m_ip.group(1))
+
+        # Fallback: compute MSRP from "You Save: $xx.xx (xx%)" if regex missed it
+        if result["price"] is not None and result["msrp"] is None:
+            m_save = re.search(r"You Save:\s*\$([\d,]+\.?\d{0,2})", html, re.I)
+            if m_save:
+                savings = float(m_save.group(1).replace(",", ""))
+                result["msrp"] = round(result["price"] + savings, 2)
+                print(f"    [FPG] MSRP computed from You Save: {savings} -> msrp={result['msrp']}")
 
         if result["price"] is not None:
             print(f"    [FPG] {pn_clean}: price=${result['price']}  MSRP=${result['msrp']}")
