@@ -10,11 +10,15 @@ Key improvements over original:
   - Longer timeouts (90 s) for slow sites like mopar.oempartsonline.com
   - Browser instance is shared across all parts in a batch (faster)
   - No Excel / CSV dependency — pure in-memory API
+  - Ford parts use FordPartsGiant.com (server-side HTML, no Cloudflare)
+    instead of Playwright — fast, reliable, has both price + MSRP.
 """
 
 import asyncio
 import re
 from typing import Optional
+
+import httpx
 
 try:
     from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -95,6 +99,24 @@ VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.I)
 # (e.g. 260709175213338). They are NOT OEM part numbers.
 _INTERNAL_CODE_RE = re.compile(r"^\d{12,16}$")
 
+# FordPartsGiant price pattern: "$1215.10 MSRP: $1356.14"
+_FPG_PRICE_RE = re.compile(
+    r'\$([\d,]+\.?\d{0,2})\s+MSRP:\s*\$([\d,]+\.?\d{0,2})'
+)
+# Fallback: meta-description price only (no MSRP available)
+_FPG_META_RE = re.compile(
+    r'\$([\d,]+\.?\d{0,2})\s+online at FordPartsGiant', re.I
+)
+
+_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -133,7 +155,136 @@ def parse_price(text: str) -> Optional[float]:
     return None
 
 
-# ── Single-part lookup ────────────────────────────────────────────────────────
+# ── FordPartsGiant lookup (Ford-only, httpx, no Playwright) ──────────────────
+
+async def _fetch_fordpartsgiant(client: httpx.AsyncClient, part_number: str) -> dict:
+    """
+    Look up a Ford part on FordPartsGiant.com.
+
+    Server-side rendered HTML — no Cloudflare, no JavaScript needed.
+    URL pattern: /parts/ford-part~{PART_NUMBER_NO_DASHES}.html
+    Follows redirect to the canonical product slug automatically.
+
+    Returns: {price, msrp, url, error}
+    """
+    pn_clean = re.sub(r"[-\s]", "", part_number).upper()
+    url = f"https://www.fordpartsgiant.com/parts/ford-part~{pn_clean}.html"
+    result: dict = {"price": None, "msrp": None, "url": url, "error": None}
+
+    try:
+        print(f"    [FPG] GET {url}")
+        resp = await client.get(url, follow_redirects=True, timeout=15.0)
+        result["url"] = str(resp.url)
+
+        if resp.status_code == 404:
+            result["error"] = "not_found"
+            print(f"    [FPG] 404 for {pn_clean}")
+            return result
+
+        if resp.status_code != 200:
+            result["error"] = f"http_{resp.status_code}"
+            print(f"    [FPG] HTTP {resp.status_code} for {pn_clean}")
+            return result
+
+        html = resp.text
+
+        # Primary: price + MSRP in page body
+        m = _FPG_PRICE_RE.search(html)
+        if m:
+            result["price"] = float(m.group(1).replace(",", ""))
+            result["msrp"]  = float(m.group(2).replace(",", ""))
+            print(f"    [FPG] {pn_clean}: price=${result['price']}  MSRP=${result['msrp']}")
+            return result
+
+        # Fallback: price from meta-description only (MSRP not available)
+        m2 = _FPG_META_RE.search(html)
+        if m2:
+            result["price"] = float(m2.group(1).replace(",", ""))
+            print(f"    [FPG] {pn_clean}: price=${result['price']} (meta only, no MSRP)")
+            return result
+
+        # No price found — likely "Currently Unavailable" or wrong part
+        result["error"] = "no_price"
+        snippet = html[html.find("<body"):html.find("<body") + 500].replace("\n", " ")[:300]
+        print(f"    [FPG] no price found for {pn_clean}. snippet: {snippet}")
+
+    except httpx.TimeoutException:
+        result["error"] = "timeout"
+        print(f"    [FPG] timeout for {pn_clean}")
+    except Exception as e:
+        result["error"] = str(e)
+        print(f"    [FPG] error for {pn_clean}: {e}")
+
+    return result
+
+
+async def _lookup_ford_parts(parts: list, vin: Optional[str]) -> list[dict]:
+    """
+    Ford-specific lookup: FordPartsGiant.com + eBay fired concurrently.
+    No Playwright browser — pure httpx.  Typically < 3s for 3 parts.
+    """
+    # Normalize input
+    part_list = [
+        (
+            p.get("parte", "") if isinstance(p, dict) else str(p),
+            p.get("descripcion", "") if isinstance(p, dict) else "",
+        )
+        for p in parts
+    ]
+
+    # Filter out internal Audatex codes
+    real, pre_results = [], []
+    for pn, desc in part_list:
+        if is_internal_audatex_code(pn):
+            pre_results.append({
+                "parte": pn, "descripcion": desc,
+                "msrp": None, "price": None, "vin_fits": "N/A", "url": "",
+                "error": "internal_audatex_code",
+                "note": "This is an internal Inpart code, not an OEM part number. "
+                        "Look up manually in the OEM catalog.",
+                "ebay": None,
+            })
+            print(f"  [skip] {pn} — internal Audatex code")
+        else:
+            real.append((pn, desc))
+
+    if not real:
+        return pre_results
+
+    print(f"[oem/ford] Fetching {len(real)} part(s) from FordPartsGiant + eBay concurrently")
+
+    async with httpx.AsyncClient(headers=_HTTP_HEADERS) as client:
+        fpg_tasks  = [_fetch_fordpartsgiant(client, pn) for pn, _ in real]
+        ebay_tasks = [ebay_search_part(pn, desc, brand="ford") for pn, desc in real]
+
+        fpg_results, ebay_results = await asyncio.gather(
+            asyncio.gather(*fpg_tasks),
+            asyncio.gather(*ebay_tasks),
+        )
+
+    results = list(pre_results)
+    for (pn, desc), fpg, ebay in zip(real, fpg_results, ebay_results):
+        msrp_s  = f"${fpg['msrp']}"  if fpg["msrp"]  else "-"
+        price_s = f"${fpg['price']}" if fpg["price"] else "-"
+        status  = fpg["error"] or f"MSRP:{msrp_s}  Price:{price_s}"
+        print(f"  → {pn}: {status}")
+
+        results.append({
+            "parte":       pn,
+            "descripcion": desc,
+            "msrp":        fpg["msrp"],
+            "price":       fpg["price"],
+            "vin_fits":    "N/A",   # FordPartsGiant doesn't do per-VIN fitment
+            "url":         fpg["url"],
+            "error":       fpg["error"],
+            "note":        None,
+            "ebay":        ebay,
+        })
+
+    return results
+
+
+# ── Single-part lookup (Playwright, non-Ford brands) ─────────────────────────
 
 async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
                      timeout_ms: int = 90_000) -> dict:
@@ -162,12 +313,24 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
         t1 = __import__("time").monotonic()
         print(f"    URL after load ({t1-t0:.1f}s): {page.url}")
 
+        # Fast Cloudflare detection — bail in ~1.5s instead of wasting 12s.
+        try:
+            _body = await page.locator("body").inner_text(timeout=1_500)
+            _bl = _body.lower()
+            if any(x in _bl for x in ["security verification", "you have been blocked",
+                                       "verifies you are not a bot", "cloudflare"]):
+                print(f"    Cloudflare block detected — skipping")
+                result["error"] = "cloudflare_block"
+                return result
+        except Exception:
+            pass
+
         # If still on search results, navigate to the matching product page.
         # React renders product links asynchronously after the search API call
         # completes — 3 s was too short.  Give it up to 12 s to appear.
         if "/search" in page.url:
             try:
-                pn_lower = part_number.lower()
+                pn_lower  = part_number.lower()
                 pn_nodash = pn_lower.replace("-", "").replace(" ", "")
                 link = page.locator(
                     f'a[href*="{pn_nodash}"], a[href*="{pn_lower}"], a[href*="{part_number.upper()}"]'
@@ -187,7 +350,7 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
                 # Log visible page text to diagnose bot-block vs slow render
                 try:
                     body_text = await page.locator("body").inner_text(timeout=2_000)
-                    snippet = body_text[:400].replace("\n", " ").strip()
+                    snippet   = body_text[:400].replace("\n", " ").strip()
                     print(f"    page text: {snippet}")
                 except Exception:
                     pass
@@ -249,6 +412,14 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
                         result["vin_fits"] = "YES"
                 except Exception:
                     pass
+        elif "/oem-parts/" in page.url:
+            # Product page URL but prices null — log page text to diagnose
+            try:
+                _pt      = await page.locator("body").inner_text(timeout=1_500)
+                _snippet = _pt[:300].replace("\n", " ").strip()
+                print(f"    product page text: {_snippet}")
+            except Exception:
+                pass
         else:
             print(f"    stuck on search page — skipping price/MSRP extraction")
 
@@ -264,11 +435,11 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
 
 async def _fetch_with_retry(page, base_url: str, part_number: str, vin: Optional[str],
                             retries: int = 2, timeout_ms: int = 90_000) -> dict:
-    """Wrap _fetch_one with retry logic."""
+    """Wrap _fetch_one with retry logic (skip retry on Cloudflare block)."""
     for attempt in range(1, retries + 2):
         r = await _fetch_one(page, base_url, part_number, vin, timeout_ms)
-        if r["error"] in (None, ""):
-            return r
+        if r["error"] in (None, "", "cloudflare_block"):
+            return r  # success or permanent block — no point retrying
         if attempt <= retries:
             wait = 3 * attempt
             print(f"    Retry {attempt}/{retries} in {wait}s…")
@@ -295,11 +466,15 @@ async def lookup_parts(
 
     Returns:
         list of dicts, one per part:
-          {parte, descripcion, msrp, price, vin_fits, url, error}
+          {parte, descripcion, msrp, price, vin_fits, url, error, ebay}
     """
     # Resolve brand → base URL
     effective_brand = brand or brand_from_vin(vin or "")
     base_url = OEM_URLS.get(effective_brand) if effective_brand else None
+
+    # ── Ford: fast httpx path via FordPartsGiant.com ─────────────────────────
+    if effective_brand == "ford":
+        return await _lookup_ford_parts(parts, vin)
 
     if not base_url:
         # Brand unknown — fire all eBay calls concurrently
