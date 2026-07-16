@@ -160,8 +160,10 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
     base_params = {
         "q":            query,
         "category_ids": AUTO_PARTS_CATEGORY,
-        "limit":        "5",     # cheapest 5 is enough — we only need price_min
-        "sort":         "price", # ascending: cheapest first
+        "limit":        "5",   # top 5 by relevance; we take min price from these
+        # No sort= → eBay default best-match/relevance sort.
+        # sort=price returns clips/gaskets at $3.99 that list the assembly part
+        # number as a compatibility note.  Relevance surfaces the actual part.
         "filter":       "conditionIds:{1000},buyingOptions:{FIXED_PRICE}",
     }
 
