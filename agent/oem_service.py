@@ -83,7 +83,7 @@ _INTERNAL_CODE_RE = re.compile(r"^\d{12,16}$")
 
 # FordPartsGiant price patterns.
 # Each is searched independently because the page has HTML tags between them.
-_FPG_MSRP_RE     = re.compile(r"MSRP:\s*\$([\d,]+\.?\d{0,2})", re.I)
+_FPG_MSRP_RE     = re.compile(r"MSRP:[\s\S]{0,150}?\$([\d,]+\.?\d{0,2})", re.I)
 _FPG_META_RE     = re.compile(r"\$([\d,]+\.?\d{0,2})\s+online at FordPartsGiant", re.I)
 _FPG_ITEMPROP_RE = re.compile(
     r"itemprop=[\"']price[\"'][^>]*content=[\"']([0-9.]+)[\"']", re.I
