@@ -308,14 +308,20 @@ async def lookup_parts(
     base_url = OEM_URLS.get(effective_brand) if effective_brand else None
 
     if not base_url:
-        # Brand unknown — still try eBay for each part as fallback
-        unknown_results = []
-        for p in parts:
-            pn  = p.get("parte", "") if isinstance(p, dict) else str(p)
-            desc = p.get("descripcion", "") if isinstance(p, dict) else ""
-            print(f"     → unknown_brand (WMI: {vin[:3] if vin else '?'}) — querying eBay for {pn}...")
-            ebay_result = await ebay_search_part(pn, desc)
-            unknown_results.append({
+        # Brand unknown — fire all eBay calls concurrently
+        part_list = [
+            (p.get("parte", "") if isinstance(p, dict) else str(p),
+             p.get("descripcion", "") if isinstance(p, dict) else "")
+            for p in parts
+        ]
+        print(f"     → unknown_brand (WMI: {vin[:3] if vin else '?'}) — "
+              f"querying eBay for {len(part_list)} parts concurrently...")
+        ebay_results = await asyncio.gather(*[
+            ebay_search_part(pn, desc, brand="")
+            for pn, desc in part_list
+        ])
+        return [
+            {
                 "parte":       pn,
                 "descripcion": desc,
                 "msrp":        None,
@@ -324,9 +330,10 @@ async def lookup_parts(
                 "url":         "",
                 "error":       f"unknown_brand (VIN WMI: {vin[:3] if vin else '?'})",
                 "note":        "Brand not in US OEM catalog — eBay searched as fallback.",
-                "ebay":        ebay_result,
-            })
-        return unknown_results
+                "ebay":        ebay_results[i],
+            }
+            for i, (pn, desc) in enumerate(part_list)
+        ]
 
     # Pre-filter: separate real OEM parts from internal Audatex codes
     real_parts = []
@@ -357,6 +364,22 @@ async def lookup_parts(
 
     results = list(pre_results)  # start with pre-flagged internal codes
 
+    # ── Fire all eBay lookups concurrently BEFORE Playwright starts ───────────
+    # asyncio.create_task schedules them immediately; Playwright OEM scraping
+    # runs below while eBay HTTP calls complete in the background.
+    ebay_tasks = [
+        asyncio.create_task(
+            ebay_search_part(
+                p.get("parte", "") if isinstance(p, dict) else str(p),
+                p.get("descripcion", "") if isinstance(p, dict) else "",
+                brand=effective_brand or "",
+            )
+        )
+        for p in real_parts
+    ]
+
+    oem_scrape_results: list[tuple] = []  # (part_number, descripcion, oem_result)
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=headless,
@@ -381,7 +404,6 @@ async def lookup_parts(
             await stealth_async(page)
 
         for i, part_entry in enumerate(real_parts, 1):
-            # Accept both plain strings and dicts {"parte": ..., "descripcion": ...}
             if isinstance(part_entry, dict):
                 part_number = part_entry.get("parte", "")
                 descripcion = part_entry.get("descripcion", "")
@@ -390,46 +412,49 @@ async def lookup_parts(
                 descripcion = ""
 
             if not part_number:
+                oem_scrape_results.append(("", "", {"msrp": None, "price": None,
+                                                     "vin_fits": "N/A", "url": "",
+                                                     "error": "empty_part_number"}))
                 continue
 
             print(f"  [{i}/{len(real_parts)}] {part_number}  {descripcion}")
             r = await _fetch_with_retry(page, base_url, part_number, vin)
-
-            msrp_s  = f"${r['msrp']}"  if r["msrp"]  else "-"
-            price_s = f"${r['price']}" if r["price"] else "-"
-
-            # Detect "not in US market" — part lookup succeeded but no price found
-            no_market = (
-                r["error"] is None
-                and r["msrp"] is None
-                and r["price"] is None
-            )
-            note = None
-
-            if no_market:
-                note = ("Part not listed on oempartsonline.com for this brand. "
-                        "Likely not sold in the US market (e.g. Hilux, Fortuner, "
-                        "Ecuador/LatAm-spec vehicle).")
-
-            # Always search eBay — primary source for aftermarket pricing
-            print(f"     → querying eBay for {part_number}...")
-            ebay_result = await ebay_search_part(part_number, descripcion, brand=effective_brand or "")
-
-            status = r["error"] or (f"NOT IN US MARKET" if no_market else f"MSRP:{msrp_s}  Price:{price_s}  Fits:{r['vin_fits']}")
-            print(f"     → {status}")
-
-            results.append({
-                "parte":       part_number,
-                "descripcion": descripcion,
-                "msrp":        r["msrp"],
-                "price":       r["price"],
-                "vin_fits":    r["vin_fits"],
-                "url":         r["url"],
-                "error":       r["error"],
-                "note":        note,
-                "ebay":        ebay_result,
-            })
+            oem_scrape_results.append((part_number, descripcion, r))
 
         await browser.close()
+
+    # ── Collect eBay results (most already done during Playwright scraping) ────
+    ebay_results = await asyncio.gather(*ebay_tasks)
+
+    for (part_number, descripcion, r), ebay_result in zip(oem_scrape_results, ebay_results):
+        if not part_number:
+            continue
+
+        msrp_s  = f"${r['msrp']}"  if r["msrp"]  else "-"
+        price_s = f"${r['price']}" if r["price"] else "-"
+
+        no_market = (
+            r["error"] is None
+            and r["msrp"] is None
+            and r["price"] is None
+        )
+        note = ("Part not listed on oempartsonline.com for this brand. "
+                "Likely not sold in the US market (e.g. Hilux, Fortuner, "
+                "Ecuador/LatAm-spec vehicle).") if no_market else None
+
+        status = r["error"] or (f"NOT IN US MARKET" if no_market else f"MSRP:{msrp_s}  Price:{price_s}  Fits:{r['vin_fits']}")
+        print(f"  → {part_number}: {status}")
+
+        results.append({
+            "parte":       part_number,
+            "descripcion": descripcion,
+            "msrp":        r["msrp"],
+            "price":       r["price"],
+            "vin_fits":    r["vin_fits"],
+            "url":         r["url"],
+            "error":       r["error"],
+            "note":        note,
+            "ebay":        ebay_result,
+        })
 
     return results
