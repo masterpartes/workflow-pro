@@ -209,27 +209,59 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
     date_to   = datetime.now().strftime("%d/%m/%Y")
     print(f"[inpart] Date range: {date_from} → {date_to}")
 
-    # ── Fill dates via JavaScript ──────────────────────────────────────────
+    # ── Set Status = Pendiente FIRST ───────────────────────────────────────
+    # Must be done before filling dates: the status dropdown has AutoPostBack
+    # which triggers a partial page reload that resets date values.
+    # Setting status first, then filling dates on the settled page avoids this.
+    try:
+        selects = page.locator("select")
+        n = await selects.count()
+        for i in range(n):
+            options = await selects.nth(i).evaluate(
+                "el => Array.from(el.options).map(o => ({v: o.value, t: o.text}))"
+            )
+            for opt in options:
+                if "pendiente" in opt.get("t", "").lower():
+                    await selects.nth(i).select_option(value=opt["v"])
+                    print(f"[inpart] Status filter → {opt['t']}")
+                    break
+    except Exception as e:
+        print(f"[inpart] WARNING: could not set status filter: {e}")
+
+    # Wait for any AutoPostBack triggered by the status select to settle
+    await page.wait_for_timeout(2000)
+
+    # ── Fill dates via JavaScript (AFTER status select) ────────────────────
     # ASP.NET calendar picker inputs are often readonly; .fill() is silently
     # ignored on them.  We remove readonly, set the value, and fire all events.
     date_fill_result = await page.evaluate(f"""
         () => {{
             const allInputs = [...document.querySelectorAll('input[type="text"]')];
 
-            // Priority 1: inputs whose id/name contains 'fecha' (case-insensitive)
+            // Priority 1: inputs whose id/name contains 'StartDate' or 'EndDate'
             let dateInputs = allInputs.filter(el =>
-                el.id.toLowerCase().includes('fecha') ||
-                el.name.toLowerCase().includes('fecha')
+                el.id.toLowerCase().includes('startdate') ||
+                el.id.toLowerCase().includes('enddate') ||
+                el.name.toLowerCase().includes('startdate') ||
+                el.name.toLowerCase().includes('enddate')
             );
 
-            // Priority 2: inputs that already hold a dd/mm/yyyy value
+            // Priority 2: inputs whose id/name contains 'fecha'
+            if (dateInputs.length < 2) {{
+                dateInputs = allInputs.filter(el =>
+                    el.id.toLowerCase().includes('fecha') ||
+                    el.name.toLowerCase().includes('fecha')
+                );
+            }}
+
+            // Priority 3: inputs that already hold a dd/mm/yyyy value
             if (dateInputs.length < 2) {{
                 dateInputs = allInputs.filter(el =>
                     /\d{{2}}\/\d{{2}}\/\d{{4}}/.test(el.value)
                 );
             }}
 
-            // Priority 3: first two text inputs on the form
+            // Priority 4: first two text inputs on the form
             if (dateInputs.length < 2) {{
                 dateInputs = allInputs.slice(0, 2);
             }}
@@ -260,22 +292,6 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
     print(f"[inpart] Date fill: {date_fill_result}")
     await page.wait_for_timeout(500)
 
-    # ── Set Status = Pendiente ─────────────────────────────────────────────
-    try:
-        selects = page.locator("select")
-        n = await selects.count()
-        for i in range(n):
-            options = await selects.nth(i).evaluate(
-                "el => Array.from(el.options).map(o => ({v: o.value, t: o.text}))"
-            )
-            for opt in options:
-                if "pendiente" in opt.get("t", "").lower():
-                    await selects.nth(i).select_option(value=opt["v"])
-                    print(f"[inpart] Status filter → {opt['t']}")
-                    break
-    except Exception as e:
-        print(f"[inpart] WARNING: could not set status filter: {e}")
-
     # ── Click Buscar ───────────────────────────────────────────────────────
     try:
         buscar = page.locator(
@@ -295,8 +311,8 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
     # ── Check for "period exceeded" error ─────────────────────────────────
     body = await page.inner_text("body")
     if "período excedido" in body.lower() or "periodo excedido" in body.lower():
-        print("[inpart] WARNING: Date range too wide — retrying with 7 days…")
-        return await get_pending_quotations(page, days_back=7, debug=debug)
+        print("[inpart] WARNING: Date range too wide — retrying with 14 days…")
+        return await get_pending_quotations(page, days_back=14, debug=debug)
 
     # ── Parse results table via JavaScript ────────────────────────────────
     # BUG in original: picking the table with the most rows chose a layout
@@ -738,7 +754,7 @@ async def _scrape_case_info(page) -> dict:
 # ── Main scraping function ────────────────────────────────────────────────────
 
 async def scrape_pending_quotations(
-    days_back: int = 7,
+    days_back: int = 1,
     fetch_details: bool = True,
     debug: bool = False,
     headless: bool = True,
