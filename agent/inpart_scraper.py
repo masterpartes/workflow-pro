@@ -444,7 +444,7 @@ _TAB_DATOS_ID = "__tab_ctl00_cphBody_tbcAnswerQuotation_tabQuotationData"
 _PANEL_DATOS_ID = "ctl00_cphBody_tbcAnswerQuotation_tabQuotationData"
 
 
-async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str = None, debug=False) -> dict:
+async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str = None, debug=False, days_back: int = 30) -> dict:
     """
     Open the detail page for a specific quotation and scrape:
       Tab "Items Cotización" — parts list: [{parte, descripcion}]
@@ -470,25 +470,46 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
         await page.wait_for_timeout(2000)
 
     else:
-        # ── Strategy 2: search by cotizacion number, click Visualizar (same-window nav) ──
-        # Confirmed: Visualizar is a __doPostBack image button that navigates the current
-        # page to frmQuotationSupplierAnswer.aspx?IdQuotation=xxx — NOT a popup.
+        # ── Strategy 2: search by cotizacion number, click Visualizar ────────────
+        # Visualizar does a same-window __doPostBack for most quotations.
+        # Some newer quotation types may open a popup window instead.
         await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1500)
 
-        # Set a wide date range so older quotations are findable.
-        # The page default is only ~2 days, which excludes quotations from earlier weeks.
-        _date_from = (datetime.now() - timedelta(days=90)).strftime("%d/%m/%Y")
+        # If session expired, page.goto redirects to AudaPartsSite/ — re-login.
+        if "AudaPartsWebApp" not in page.url:
+            print(f"[inpart] Session expired before COT {cotizacion_id} detail (URL: {page.url}) — re-logging in")
+            ok = await login(page, debug=debug)
+            if not ok:
+                print(f"[inpart] Re-login failed — skipping COT {cotizacion_id}")
+                return {
+                    "cotizacion_id": cotizacion_id,
+                    "detail_url": "relogin_failed",
+                    "vin": None, "matricula": None, "siniestro": None,
+                    "aseguradora": None, "taller": None, "armadora": None,
+                    "ano_modelo": None, "partes": [],
+                }
+            await page.goto(INPART_SEARCH, wait_until="domcontentloaded", timeout=45_000)
+            await page.wait_for_timeout(2000)
+
+        # Use max(days_back, 14) so older quotations still appear in results.
+        _search_days = max(days_back, 14)
+        _date_from = (datetime.now() - timedelta(days=_search_days)).strftime("%d/%m/%Y")
         _date_to   = datetime.now().strftime("%d/%m/%Y")
         await page.evaluate(f"""
             () => {{
                 const allInputs = [...document.querySelectorAll('input[type="text"]')];
                 let dateInputs = allInputs.filter(el =>
-                    /\\d{{2}}\\/\\d{{2}}\\/\\d{{4}}/.test(el.value) ||
-                    el.id.toLowerCase().includes('fecha') ||
-                    el.name.toLowerCase().includes('fecha')
+                    el.id.toLowerCase().includes('startdate') ||
+                    el.id.toLowerCase().includes('enddate')
                 );
-                if (dateInputs.length < 2) dateInputs = allInputs.slice(0, 2);
+                if (dateInputs.length < 2) {{
+                    dateInputs = allInputs.filter(el =>
+                        /\\d{{2}}\\/\\d{{2}}\\/\\d{{4}}/.test(el.value) ||
+                        el.id.toLowerCase().includes('fecha') ||
+                        el.name.toLowerCase().includes('fecha')
+                    );
+                }}
                 function setVal(el, val) {{
                     if (!el) return;
                     el.readOnly = false; el.value = val;
@@ -522,31 +543,42 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
             print(f"[inpart] WARNING: Buscar click failed: {e}")
         await page.wait_for_timeout(3000)
 
-        # Log image buttons so Railway logs confirm which button gets clicked
+        # Log all image buttons to Railway logs for debugging
         btn_info = await page.evaluate("""
             () => Array.from(document.querySelectorAll('input[type="image"]')).map(b => ({
                 id:      b.id,
                 name:    b.name,
                 title:   b.title,
                 tableId: (b.closest('table[id]') || {}).id || null,
+                rowText: (b.closest('tr') || {}).innerText || null,
             }))
         """)
         print(f"[inpart] Image buttons after search (COT {cotizacion_id}): {btn_info}")
 
-        # Click the Visualizar button — must be inside the GridView, not a form button.
-        # If not found, bail rather than clicking a random button.
+        # Find Visualizar button scoped to the row containing our cotizacion_id.
+        # This avoids clicking the wrong button when the GridView has multiple rows
+        # or uses a table ID that doesn't match our GridView selector.
+        cotizacion_id_str = str(cotizacion_id)
         visualizar = page.locator(
-            "table[id*='GridView'] input[type='image'], "
-            "table[id*='gridview'] input[type='image'], "
-            "table[id*='Grid'] input[type='image']"
+            f"tr:has(td:has-text('{cotizacion_id_str}')) input[type='image']"
         ).first
+
         if await visualizar.count() == 0:
-            # Try by id/name/title in case the table id doesn't contain "Grid"
+            # Fallback 1: any GridView image button
+            visualizar = page.locator(
+                "table[id*='GridView'] input[type='image'], "
+                "table[id*='gridview'] input[type='image'], "
+                "table[id*='Grid'] input[type='image']"
+            ).first
+
+        if await visualizar.count() == 0:
+            # Fallback 2: button with Visualizar in id/name/title
             visualizar = page.locator(
                 "input[type='image'][id*='Visual' i], "
                 "input[type='image'][name*='Visual' i], "
                 "input[type='image'][title*='isualiz' i]"
             ).first
+
         if await visualizar.count() == 0:
             print(f"[inpart] WARNING: no Visualizar button found for COT {cotizacion_id} — skipping detail")
             return {
@@ -557,7 +589,13 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
                 "ano_modelo": None, "partes": [],
             }
 
-        # Use expect_navigation — the click does a same-window __doPostBack
+        # Register popup listener before clicking — some quotation types open a
+        # new window while navigating the main page back to the portal home.
+        popup_holder: list = []
+        def _on_popup(p):
+            popup_holder.append(p)
+        page.context.on("page", _on_popup)
+
         print(f"[inpart] Clicking Visualizar for COT {cotizacion_id}, URL before: {page.url}")
         try:
             async with page.expect_navigation(
@@ -569,11 +607,23 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
             print(f"[inpart] WARNING: Visualizar navigation error: {nav_err}")
             await page.wait_for_timeout(2000)
 
+        page.context.remove_listener("page", _on_popup)
         print(f"[inpart] URL after Visualizar click: {page.url}")
+
+        # If the main window navigated away from AudaPartsWebApp but a popup
+        # opened, use the popup page for scraping.
+        if popup_holder and "AudaPartsWebApp" not in page.url:
+            detail_page = popup_holder[0]
+            print(f"[inpart] Using popup page for COT {cotizacion_id}: {detail_page.url}")
+            try:
+                await detail_page.wait_for_load_state("domcontentloaded", timeout=15_000)
+            except Exception:
+                pass
+            return await _scrape_detail_tabs(detail_page, cotizacion_id, debug, close_after=True)
 
     # ── We navigated directly (Strategy 1 or 2a) — scrape main page ──────────
     actual_url_check = page.url
-    if "ControlPanel" in actual_url_check or "Login" in actual_url_check:
+    if "AudaPartsWebApp" not in actual_url_check:
         print(f"[inpart] WARNING: landed on wrong page ({actual_url_check}) for COT {cotizacion_id}")
         return {
             "cotizacion_id": cotizacion_id,
@@ -812,6 +862,7 @@ async def scrape_pending_quotations(
                             page, q["cotizacion_id"],
                             id_quotation_url=q.get("id_quotation_url"),
                             debug=debug,
+                            days_back=days_back,
                         )
                         # Only overwrite fields that detail actually found.
                         # This preserves aseguradora/taller/matricula/etc. that were
