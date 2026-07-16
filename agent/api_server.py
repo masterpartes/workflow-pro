@@ -132,6 +132,8 @@ async def quote(req: QuoteRequest):
     # Build input for oem_service
     parts_input = [{"parte": p.parte, "descripcion": p.descripcion} for p in req.parts]
 
+    import time as _time
+    _t0 = _time.monotonic()
     try:
         results = await lookup_parts(
             parts=parts_input,
@@ -141,13 +143,16 @@ async def quote(req: QuoteRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OEM lookup failed: {e}")
+    elapsed = round(_time.monotonic() - _t0, 1)
+    print(f"[quote] {len(results)} parts in {elapsed}s")
 
     return {
-        "vin":    req.vin,
-        "brand":  req.brand or brand_from_vin(req.vin or ""),
-        "parts":  results,
-        "count":  len(results),
-        "priced": sum(1 for r in results if r.get("price")),
+        "vin":        req.vin,
+        "brand":      req.brand or brand_from_vin(req.vin or ""),
+        "parts":      results,
+        "count":      len(results),
+        "priced":     sum(1 for r in results if r.get("price")),
+        "elapsed_s":  elapsed,
     }
 
 

@@ -33,8 +33,8 @@ _AFTERMARKET_WORDS = {
     "premium quality", "high quality", "new replacement",
 }
 
-# eBay Brand aspect values for genuine OEM parts, keyed by our internal brand.
-# Used to make a brand-filtered second call when the brand is known.
+# eBay Brand aspect values for genuine OEM filter.
+# Used as aspect_filter=Brand:{value} (colon must NOT be URL-encoded — see genuine call).
 GENUINE_BRAND_FILTER: dict[str, str] = {
     "ford":       "Ford",
     "gm":         "ACDelco",
@@ -50,8 +50,8 @@ GENUINE_BRAND_FILTER: dict[str, str] = {
     "vw":         "Volkswagen",
     "subaru":     "Subaru",
     "mazda":      "Mazda",
-    "lexus":      "Toyota",
-    "acura":      "Honda",
+    "lexus":      "Lexus",
+    "acura":      "Acura",
     "mitsubishi": "Mitsubishi",
     "jaguar":     "Jaguar",
     "landrover":  "Land Rover",
@@ -170,8 +170,13 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
             # Fire primary call + optional brand-filtered genuine call concurrently
             calls = [client.get(EBAY_BROWSE_URL, params=base_params, headers=headers)]
             if genuine_brand:
-                g_params = {**base_params, "aspect_filter": f"Brand:{genuine_brand}"}
-                calls.append(client.get(EBAY_BROWSE_URL, params=g_params, headers=headers))
+                # aspect_filter=Brand:Ford must have a raw (unencoded) colon.
+                # httpx URL-encodes colons in param values (%3A), which eBay
+                # silently ignores. Build the URL manually to keep it raw.
+                import urllib.parse as _up
+                _base_qs = _up.urlencode(base_params)
+                g_url = f"{EBAY_BROWSE_URL}?{_base_qs}&aspect_filter=Brand:{genuine_brand}"
+                calls.append(client.get(g_url, headers=headers))
             responses = await asyncio.gather(*calls, return_exceptions=True)
 
         # ── primary (all listings) ────────────────────────────────────────
