@@ -56,36 +56,42 @@ WMI_TO_BRAND: dict[str, str] = {
 
 OEM_URLS: dict[str, str] = {
     "acura":      "https://acura.oempartsonline.com",
-    "audi":       "https://audi.oempartsonline.com",
-    "bmw":        "https://bmw.oempartsonline.com",
-    "ford":       "https://ford.oempartsonline.com",
-    "gm":         "https://gm.oempartsonline.com",
-    "honda":      "https://honda.oempartsonline.com",
     "hyundai":    "https://hyundai.oempartsonline.com",
     "infiniti":   "https://infiniti.oempartsonline.com",
     "jaguar":     "https://jaguar.oempartsonline.com",
     "kia":        "https://kia.oempartsonline.com",
     "landrover":  "https://landrover.oempartsonline.com",
-    "lexus":      "https://lexus.oempartsonline.com",
     "mazda":      "https://mazda.oempartsonline.com",
-    "mitsubishi": "https://mitsubishi.oempartsonline.com",
-    "mopar":      "https://mopar.oempartsonline.com",
-    "nissan":     "https://nissan.oempartsonline.com",
     "porsche":    "https://porsche.oempartsonline.com",
     "subaru":     "https://subaru.oempartsonline.com",
-    "toyota":     "https://toyota.oempartsonline.com",
-    "vw":         "https://vw.oempartsonline.com",
-    "volvo":      "https://volvo.oempartsonline.com",
+}
+
+# Brands served by fast httpx-based scrapers (server-side HTML, no Cloudflare).
+# Each entry: brand -> (base_url, url_prefix_in_path)
+# URL pattern: {base_url}/parts/{prefix}-part~{PN_NO_DASHES}.html
+_PARTS_SITES: dict[str, tuple[str, str]] = {
+    "ford":       ("https://www.fordpartsgiant.com",       "ford"),
+    "nissan":     ("https://www.nissanpartsdeal.com",      "nissan"),
+    "mopar":      ("https://www.moparpartsgiant.com",      "mopar"),
+    "audi":       ("https://www.audipartsgiant.com",       "audi"),
+    "bmw":        ("https://www.bmwpartsdeal.com",         "bmw"),
+    "gm":         ("https://www.gmpartsgiant.com",         "gm"),
+    "honda":      ("https://www.hondapartsnow.com",        "honda"),
+    "lexus":      ("https://www.lexuspartsnow.com",        "lexus"),
+    "mitsubishi": ("https://www.mitsubishipartsgiant.com", "mitsubishi"),
+    "toyota":     ("https://www.toyotapartsdeal.com",      "toyota"),
+    "vw":         ("https://www.vwpartsgiant.com",         "vw"),
+    "volvo":      ("https://www.volvopartsgiant.com",      "volvo"),
 }
 
 VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.I)
 _INTERNAL_CODE_RE = re.compile(r"^\d{12,16}$")
 
-# FordPartsGiant price patterns.
-# Each is searched independently because the page has HTML tags between them.
-_FPG_MSRP_RE     = re.compile(r"MSRP:[\s\S]{0,150}?\$([\d,]+\.?\d{0,2})", re.I)
-_FPG_META_RE     = re.compile(r"\$([\d,]+\.?\d{0,2})\s+online at FordPartsGiant", re.I)
-_FPG_ITEMPROP_RE = re.compile(
+# Price patterns for the parts-site scrapers (same platform across all brands).
+# Searched on comment-stripped HTML; each pattern is independent.
+_PS_MSRP_RE     = re.compile(r"MSRP:[\s\S]{0,150}?\$([\d,]+\.?\d{0,2})", re.I)
+_PS_META_RE     = re.compile(r"\$([\d,]+\.?\d{0,2})\s+online at", re.I)   # any site
+_PS_ITEMPROP_RE = re.compile(
     r"itemprop=[\"']price[\"'][^>]*content=[\"']([0-9.]+)[\"']", re.I
 )
 
@@ -115,7 +121,11 @@ def brand_from_vin(vin: str) -> Optional[str]:
 
 def base_url_from_vin(vin: str) -> Optional[str]:
     brand = brand_from_vin(vin)
-    return OEM_URLS.get(brand) if brand else None
+    if not brand:
+        return None
+    if brand in _PARTS_SITES:
+        return _PARTS_SITES[brand][0]
+    return OEM_URLS.get(brand)
 
 
 def parse_price(text: str) -> Optional[float]:
@@ -128,29 +138,35 @@ def parse_price(text: str) -> Optional[float]:
     return None
 
 
-async def _fetch_fordpartsgiant(client: httpx.AsyncClient, part_number: str) -> dict:
+async def _fetch_parts_site(
+    client: httpx.AsyncClient,
+    part_number: str,
+    base_url: str,
+    url_prefix: str,
+) -> dict:
     """
-    Look up a Ford part on FordPartsGiant.com.
-    Server-side HTML, no Cloudflare, no Playwright needed.
-    URL: /parts/ford-part~{PN_NO_DASHES}.html  -> follows redirect to slug.
+    Look up a part on any of the *PartsDeal / *PartsGiant / *PartsNow sites.
+    All use the same platform: server-side HTML, no Cloudflare, no Playwright.
+    URL pattern: {base_url}/parts/{url_prefix}-part~{PN_NO_DASHES}.html
+                 → follows redirect to the canonical slug page.
     """
     pn_clean = re.sub(r"[-\s]", "", part_number).upper()
-    url = f"https://www.fordpartsgiant.com/parts/ford-part~{pn_clean}.html"
+    url = f"{base_url}/parts/{url_prefix}-part~{pn_clean}.html"
     result: dict = {"price": None, "msrp": None, "url": url, "error": None}
 
     try:
-        print(f"    [FPG] GET {url}")
+        print(f"    [OEM-HTTP] GET {url}")
         resp = await client.get(url, follow_redirects=True, timeout=15.0)
         result["url"] = str(resp.url)
 
         if resp.status_code == 404:
             result["error"] = "not_found"
-            print(f"    [FPG] 404 for {pn_clean}")
+            print(f"    [OEM-HTTP] 404 for {pn_clean}")
             return result
 
         if resp.status_code != 200:
             result["error"] = f"http_{resp.status_code}"
-            print(f"    [FPG] HTTP {resp.status_code} for {pn_clean}")
+            print(f"    [OEM-HTTP] HTTP {resp.status_code} for {pn_clean}")
             return result
 
         html = resp.text
@@ -159,50 +175,62 @@ async def _fetch_fordpartsgiant(client: httpx.AsyncClient, part_number: str) -> 
         html_clean = re.sub(r"<!--.*?-->", "", html)
 
         # MSRP: search for literal "MSRP:" followed by a price.
-        m_msrp = _FPG_MSRP_RE.search(html_clean)
+        m_msrp = _PS_MSRP_RE.search(html_clean)
         if m_msrp:
             result["msrp"] = float(m_msrp.group(1).replace(",", ""))
-        else:
-            print(f"    [FPG] MSRP regex no match for {pn_clean}")
 
-        # Sale price: cleanest source is the meta-description (no comments there)
-        m_meta = _FPG_META_RE.search(html)
+        # Sale price: meta-description is cleanest (no hydration comments)
+        m_meta = _PS_META_RE.search(html)
         if m_meta:
             result["price"] = float(m_meta.group(1).replace(",", ""))
         else:
-            m_ip = _FPG_ITEMPROP_RE.search(html_clean)
+            m_ip = _PS_ITEMPROP_RE.search(html_clean)
             if m_ip:
                 result["price"] = float(m_ip.group(1))
 
-        # Fallback: compute MSRP from "You Save: $xx.xx (xx%)" if regex missed it
+        # Fallback: compute MSRP from "You Save: $xx.xx (xx%)" if MSRP regex missed
         if result["price"] is not None and result["msrp"] is None:
             m_save = re.search(r"You Save:\s*\$([\d,]+\.?\d{0,2})", html_clean, re.I)
             if m_save:
                 savings = float(m_save.group(1).replace(",", ""))
                 result["msrp"] = round(result["price"] + savings, 2)
-                print(f"    [FPG] MSRP from You Save fallback: {savings} -> msrp={result['msrp']}")
+                print(f"    [OEM-HTTP] MSRP from You Save: {savings} -> {result['msrp']}")
 
         if result["price"] is not None:
-            print(f"    [FPG] {pn_clean}: price=${result['price']}  MSRP=${result['msrp']}")
+            print(f"    [OEM-HTTP] {pn_clean}: price=${result['price']}  MSRP=${result['msrp']}")
+            return result
+
+        # Part page found but no price (e.g. discontinued / unavailable)
+        # Still return any MSRP we found.
+        if result["msrp"] is not None:
+            result["error"] = "no_price"
+            print(f"    [OEM-HTTP] {pn_clean}: no sale price; MSRP=${result['msrp']}")
             return result
 
         result["error"] = "no_price"
         body_start = html.find("<body")
         snippet = html[body_start: body_start + 500].replace("\n", " ")[:300]
-        print(f"    [FPG] no price found for {pn_clean}. snippet: {snippet}")
+        print(f"    [OEM-HTTP] no price found for {pn_clean}. snippet: {snippet}")
 
     except httpx.TimeoutException:
         result["error"] = "timeout"
-        print(f"    [FPG] timeout for {pn_clean}")
+        print(f"    [OEM-HTTP] timeout for {pn_clean}")
     except Exception as e:
         result["error"] = str(e)
-        print(f"    [FPG] error for {pn_clean}: {e}")
+        print(f"    [OEM-HTTP] error for {pn_clean}: {e}")
 
     return result
 
 
-async def _lookup_ford_parts(parts: list, vin: Optional[str]) -> list[dict]:
-    """Ford-specific: FordPartsGiant + eBay concurrently. No Playwright."""
+async def _lookup_parts_via_httpx(
+    parts: list, vin: Optional[str], brand: str
+) -> list[dict]:
+    """
+    Lookup for brands in _PARTS_SITES: httpx fetch + eBay concurrently.
+    No Playwright needed.
+    """
+    base_url, url_prefix = _PARTS_SITES[brand]
+
     part_list = [
         (
             p.get("parte", "") if isinstance(p, dict) else str(p),
@@ -232,30 +260,36 @@ async def _lookup_ford_parts(parts: list, vin: Optional[str]) -> list[dict]:
     if not real:
         return pre_results
 
-    print(f"[oem/ford] Fetching {len(real)} part(s) from FordPartsGiant + eBay concurrently")
+    print(
+        f"[oem/{brand}] Fetching {len(real)} part(s) from "
+        f"{base_url} + eBay concurrently"
+    )
 
     async with httpx.AsyncClient(headers=_HTTP_HEADERS) as client:
-        fpg_tasks  = [_fetch_fordpartsgiant(client, pn) for pn, _ in real]
-        ebay_tasks = [ebay_search_part(pn, desc, brand="ford") for pn, desc in real]
-        fpg_results, ebay_results = await asyncio.gather(
-            asyncio.gather(*fpg_tasks),
+        site_tasks = [
+            _fetch_parts_site(client, pn, base_url, url_prefix)
+            for pn, _ in real
+        ]
+        ebay_tasks = [ebay_search_part(pn, desc, brand=brand) for pn, desc in real]
+        site_results, ebay_results = await asyncio.gather(
+            asyncio.gather(*site_tasks),
             asyncio.gather(*ebay_tasks),
         )
 
     results = list(pre_results)
-    for (pn, desc), fpg, ebay in zip(real, fpg_results, ebay_results):
-        msrp_s  = f"${fpg['msrp']}"  if fpg["msrp"]  else "-"
-        price_s = f"${fpg['price']}" if fpg["price"] else "-"
-        status  = fpg["error"] or f"MSRP:{msrp_s}  Price:{price_s}"
+    for (pn, desc), site, ebay in zip(real, site_results, ebay_results):
+        msrp_s  = f"${site['msrp']}"  if site["msrp"]  else "-"
+        price_s = f"${site['price']}" if site["price"] else "-"
+        status  = site["error"] or f"MSRP:{msrp_s}  Price:{price_s}"
         print(f"  -> {pn}: {status}")
         results.append({
             "parte":       pn,
             "descripcion": desc,
-            "msrp":        fpg["msrp"],
-            "price":       fpg["price"],
+            "msrp":        site["msrp"],
+            "price":       site["price"],
             "vin_fits":    "N/A",
-            "url":         fpg["url"],
-            "error":       fpg["error"],
+            "url":         site["url"],
+            "error":       site["error"],
             "note":        None,
             "ebay":        ebay,
         })
@@ -435,9 +469,9 @@ async def lookup_parts(
     effective_brand = brand or brand_from_vin(vin or "")
     base_url = OEM_URLS.get(effective_brand) if effective_brand else None
 
-    # Ford: fast httpx path via FordPartsGiant.com
-    if effective_brand == "ford":
-        return await _lookup_ford_parts(parts, vin)
+    # Brands with dedicated httpx scrapers (fast, no Playwright)
+    if effective_brand in _PARTS_SITES:
+        return await _lookup_parts_via_httpx(parts, vin, effective_brand)
 
     # Unknown brand: eBay only
     if not base_url:
@@ -574,7 +608,7 @@ async def lookup_parts(
         no_market = (r["error"] is None and r["msrp"] is None and r["price"] is None)
         note = (
             "Part not listed on oempartsonline.com for this brand. "
-            "Likely not sold in the US market (e.g. Hilux, Fortuner, "
+               "Likely not sold in the US market (e.g. Hilux, Fortuner, "
             "Ecuador/LatAm-spec vehicle)."
         ) if no_market else None
 
