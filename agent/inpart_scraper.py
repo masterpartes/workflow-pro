@@ -623,9 +623,6 @@ async def get_quotation_detail(page, cotizacion_id: str, id_quotation_url: str =
 
     # ── We navigated directly (Strategy 1 or 2a) — scrape main page ──────────
     actual_url_check = page.url
-    # Must land on frmQuotationSupplierAnswer — anything else is wrong:
-    # AudaPartsSite/ = login page, frmQuotationSupplierSearch = search page,
-    # frmControlPanelSupplier = home, etc.
     if "frmQuotationSupplierAnswer" not in actual_url_check:
         print(f"[inpart] WARNING: not on detail page ({actual_url_check}) for COT {cotizacion_id}")
         return {
@@ -678,7 +675,12 @@ async def _scrape_detail_tabs(page, cotizacion_id: str, debug: bool,
         datos_tab = page.locator(f"#{_TAB_DATOS_ID}")
         if await datos_tab.count() > 0:
             await datos_tab.click(timeout=5_000)
-            await page.wait_for_timeout(1500)
+            # Wait for UpdatePanel XHR instead of a fixed delay.
+            # Newer quotation types take longer to render their Datos panel.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5_000)
+            except Exception:
+                await page.wait_for_timeout(2500)
 
             if debug:
                 await _screenshot(page, f"09_cot{cotizacion_id}_datos")
@@ -761,11 +763,14 @@ async def _scrape_case_info(page) -> dict:
 
     js_result = await page.evaluate(f"""
         () => {{
+            // Use the known panel; fall back to document.body if the panel
+            // is missing or empty (UpdatePanel not yet rendered for some types).
             const panel = document.getElementById('{_PANEL_DATOS_ID}');
-            if (!panel) return null;
+            const root  = (panel && panel.querySelectorAll('tr').length > 0)
+                          ? panel : document.body;
 
             const result = {{}};
-            const rows = panel.querySelectorAll('tr');
+            const rows = root.querySelectorAll('tr');
             for (const row of rows) {{
                 const cells = [...row.querySelectorAll('td')];
                 // Read label: value pairs across the row
@@ -1083,15 +1088,6 @@ async def diagnose_connection(headless: bool = True) -> dict:
                     };
                 }).filter(t => t.rows > 0)
             """)
-            info["search_results"]["tables_after"] = tables_after
-
-        except Exception as e:
-            info["fatal"] = str(e)
-        finally:
-            await browser.close()
-
-    return info
-
             info["search_results"]["tables_after"] = tables_after
 
         except Exception as e:
