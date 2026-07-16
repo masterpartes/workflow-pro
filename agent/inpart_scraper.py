@@ -871,11 +871,15 @@ async def scrape_pending_quotations(
                             debug=debug,
                             days_back=days_back,
                         )
-                        # Only overwrite fields that detail actually found.
-                        # This preserves aseguradora/taller/matricula/etc. that were
-                        # already extracted from the search results table.
+                        # Merge detail into q, but never overwrite a field
+                        # that already has a good value from the search results
+                        # table (aseguradora, taller, matricula, etc.).
+                        # The Datos tab can return misleading sub-field text
+                        # (e.g. "Colonia", "RFC") that is worse than the search
+                        # list value.  Only new fields (vin, partes, valuador,
+                        # ano_modelo, ...) should come from detail.
                         for k, v in detail.items():
-                            if v is not None and v != []:
+                            if v is not None and v != [] and not q.get(k):
                                 q[k] = v
                     except Exception as e:
                         print(f"[inpart] ERROR getting detail for COT {q['cotizacion_id']}: {e}")
