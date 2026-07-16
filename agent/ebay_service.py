@@ -31,6 +31,34 @@ _AFTERMARKET_WORDS = {
     "premium quality", "high quality", "new replacement",
 }
 
+# eBay Brand aspect values for genuine OEM parts, keyed by our internal brand.
+# Used to make a brand-filtered second call when the brand is known.
+GENUINE_BRAND_FILTER: dict[str, str] = {
+    "ford":       "Ford",
+    "gm":         "ACDelco",
+    "mopar":      "Mopar",
+    "toyota":     "Toyota",
+    "honda":      "Honda",
+    "nissan":     "Nissan",
+    "infiniti":   "Infiniti",
+    "hyundai":    "Hyundai",
+    "kia":        "Kia",
+    "bmw":        "BMW",
+    "audi":       "Audi",
+    "vw":         "Volkswagen",
+    "subaru":     "Subaru",
+    "mazda":      "Mazda",
+    "lexus":      "Toyota",
+    "acura":      "Honda",
+    "mitsubishi": "Mitsubishi",
+    "jaguar":     "Jaguar",
+    "landrover":  "Land Rover",
+    "porsche":    "Porsche",
+    "volvo":      "Volvo",
+    "isuzu":      "Isuzu",
+    "suzuki":     "Suzuki",
+}
+
 
 async def _get_access_token() -> Optional[str]:
     now = time.time()
@@ -94,7 +122,7 @@ def _bucket_stats(items_data: list) -> dict:
     }
 
 
-async def search_part(part_number: str, descripcion: str = "") -> dict:
+async def search_part(part_number: str, descripcion: str = "", brand: str = "") -> dict:
     """
     Search eBay for a part number (new + Buy It Now + ships to Miami FL 33195).
     Returns price stats split by genuine vs aftermarket.
@@ -163,6 +191,41 @@ async def search_part(part_number: str, descripcion: str = "") -> dict:
                         genuine_data.append((price, ship))
                     elif label == "aftermarket":
                         aftermarket_data.append((price, ship))
+
+                # If brand is known, make a second brand-filtered call to get
+                # genuine OEM pricing (e.g. Brand:Ford for Motorcraft/Ford parts).
+                # Title-based classification misses genuine parts sold under the
+                # brand name without "OEM" or "Motorcraft" in the title.
+                genuine_brand = GENUINE_BRAND_FILTER.get(brand.lower()) if brand else None
+                if genuine_brand:
+                    resp2 = await client.get(
+                        EBAY_BROWSE_URL,
+                        params={
+                            "q":            query,
+                            "category_ids": AUTO_PARTS_CATEGORY,
+                            "limit":        "50",
+                            "filter":       "conditionIds:{1000},buyingOptions:{FIXED_PRICE}",
+                            "aspect_filter": f"Brand:{genuine_brand}",
+                        },
+                        headers={
+                            "Authorization":           f"Bearer {token}",
+                            "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+                            "X-EBAY-C-ENDUSERCTX":     enduserctx,
+                            "Content-Type":             "application/json",
+                        },
+                    )
+                    if resp2.status_code == 200:
+                        genuine_items = resp2.json().get("itemSummaries", [])
+                        if genuine_items:
+                            genuine_data = []
+                            for gitem in genuine_items:
+                                try:
+                                    gp = float(gitem.get("price", {}).get("value", 0))
+                                except (ValueError, TypeError):
+                                    continue
+                                gs = _shipping_cost(gitem)
+                                genuine_data.append((gp, gs))
+
                 if all_data:
                     result.update({
                         "found": True, "listing_count": total,

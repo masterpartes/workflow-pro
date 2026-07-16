@@ -159,14 +159,17 @@ async def _fetch_one(page, base_url: str, part_number: str, vin: Optional[str],
             except Exception:
                 await page.wait_for_timeout(6_000)
         else:
-            # Wait up to 8s for any dollar amount to appear on the page
+            # RevolutionParts uses React — dollar signs appear in the header
+            # before search results render, so wait_for_function("$") fires
+            # immediately. Instead wait for an actual /oem-parts/ product link
+            # to appear in the DOM, which means React has rendered the results.
             try:
-                await page.wait_for_function(
-                    "document.body.innerText.includes('$')",
-                    timeout=8_000,
+                await page.wait_for_selector(
+                    'a[href*="/oem-parts/"]',
+                    timeout=10_000,
                 )
             except Exception:
-                await page.wait_for_timeout(4_000)
+                await page.wait_for_timeout(5_000)
         result["url"] = page.url
         print(f"    URL after wait: {page.url}")
 
@@ -410,7 +413,7 @@ async def lookup_parts(
 
             # Always search eBay — primary source for aftermarket pricing
             print(f"     → querying eBay for {part_number}...")
-            ebay_result = await ebay_search_part(part_number, descripcion)
+            ebay_result = await ebay_search_part(part_number, descripcion, brand=effective_brand or "")
 
             status = r["error"] or (f"NOT IN US MARKET" if no_market else f"MSRP:{msrp_s}  Price:{price_s}  Fits:{r['vin_fits']}")
             print(f"     → {status}")
