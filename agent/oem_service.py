@@ -91,7 +91,9 @@ _PARTS_SITES: dict[str, tuple[str, str]] = {
 }
 
 VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.I)
-_INTERNAL_CODE_RE = re.compile(r"^\d{12,16}$")
+# Grupo Pieza codes (internal Audatex IDs): pure numeric, 15+ digits, e.g. 260716184637624.
+# MB OEM part numbers with color suffixes (e.g. 960 885 5025 9135 → 14 digits) are NOT internal.
+_INTERNAL_CODE_RE = re.compile(r"^\d{15,}$")
 
 # Price patterns for the parts-site scrapers (same platform across all brands).
 # Searched on comment-stripped HTML; each pattern is independent.
