@@ -53,6 +53,9 @@ WMI_TO_BRAND: dict[str, str] = {
     "AAV":"toyota",
     "JS2":"suzuki","JS3":"suzuki",
     "JAA":"isuzu","JA6":"isuzu",
+    # Mercedes-Benz passenger cars (European-built)
+    "WDB":"mercedes","WDD":"mercedes","WDC":"mercedes",
+    "WDF":"mercedes","WMX":"mercedes","WME":"mercedes",
 }
 
 OEM_URLS: dict[str, str] = {
@@ -83,6 +86,8 @@ _PARTS_SITES: dict[str, tuple[str, str]] = {
     "toyota":     ("https://www.toyotapartsdeal.com",      "toyota"),
     "vw":         ("https://www.vwpartsgiant.com",         "vw"),
     "volvo":      ("https://www.volvopartsgiant.com",      "volvo"),
+    # mbpartsgiant.com uses /genuine/mercedes-benz~part~{pn} — slug auto-resolved by site
+    "mercedes":   ("https://www.mbpartsgiant.com",         "mercedes-benz"),
 }
 
 VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.I)
@@ -189,7 +194,12 @@ async def _fetch_parts_site(
                  → follows redirect to the canonical slug page.
     """
     pn_clean = re.sub(r"[-\s]", "", part_number).upper()
-    url = f"{base_url}/parts/{url_prefix}-part~{pn_clean}.html"
+    # mbpartsgiant.com uses a different URL pattern: /genuine/{prefix}~part~{pn}
+    # The slug segment is ignored — the site resolves by part number and redirects.
+    if url_prefix == "mercedes-benz":
+        url = f"{base_url}/genuine/mercedes-benz~part~{pn_clean}"
+    else:
+        url = f"{base_url}/parts/{url_prefix}-part~{pn_clean}.html"
     result: dict = {"price": None, "msrp": None, "url": url, "error": None}
 
     try:
@@ -443,15 +453,15 @@ async def _lookup_parts_via_httpx(
         status  = site["error"] or f"MSRP:{msrp_s}  Price:{price_s}"
         print(f"  -> {pn}: {status}")
         results.append({
-            "parte":       pn,
-            "descripcion": desc,
-            "msrp":        site["msrp"],
-            "price":       site["price"],
-            "vin_fits":    "N/A",
-            "url":         site["url"],
-            "error":       site["error"],
-            "note":        None,
-            "ebay":        ebay,
+            "parte":            pn,
+            "descripcion":      desc,
+            "msrp":             site["msrp"],
+            "price":            site["price"],
+            "vin_fits":         "N/A",
+            "url":              site["url"],
+            "error":            site["error"],
+            "note":             None,
+            "ebay":             ebay,
         })
 
     return results
@@ -656,14 +666,14 @@ async def lookup_parts(
             )
         return [
             {
-                "parte":       pn,
-                "descripcion": desc,
-                "msrp":        None,
-                "price":       psq["price"],
-                "vin_fits":    "N/A",
-                "url":         psq["url"],
-                "error":       psq["error"],
-                "note":        (
+                "parte":            pn,
+                "descripcion":      desc,
+                "msrp":             None,
+                "price":            psq["price"],
+                "vin_fits":         "N/A",
+                "url":              psq["url"],
+                "error":            psq["error"],
+                "note":             (
                     f"Non-US VIN (WMI: {wmi}). "
                     f"OEM price from PartSouq"
                     + (f" (Make: {psq['make']})" if psq.get("make") else "")
@@ -776,6 +786,7 @@ async def lookup_parts(
         msrp_s  = f"${r['msrp']}"  if r["msrp"]  else "-"
         price_s = f"${r['price']}" if r["price"] else "-"
 
+
         no_market = (r["error"] is None and r["msrp"] is None and r["price"] is None)
         note = (
             "Part not listed on oempartsonline.com for this brand. "
@@ -790,15 +801,15 @@ async def lookup_parts(
         print(f"  -> {part_number}: {status}")
 
         results.append({
-            "parte":       part_number,
-            "descripcion": descripcion,
-            "msrp":        r["msrp"],
-            "price":       r["price"],
-            "vin_fits":    r["vin_fits"],
-            "url":         r["url"],
-            "error":       r["error"],
-            "note":        note,
-            "ebay":        ebay_result,
+            "parte":            part_number,
+            "descripcion":      descripcion,
+            "msrp":             r["msrp"],
+            "price":            r["price"],
+            "vin_fits":         r["vin_fits"],
+            "url":              r["url"],
+            "error":            r["error"],
+            "note":             note,
+            "ebay":             ebay_result,
         })
 
     return results

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Inpart — Bookmarklet Extractor</title>
+<style>
+  body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #222; }
+  h1 { color: #c0392b; }
+  .card { border: 2px solid #c0392b; border-radius: 8px; padding: 20px; margin: 24px 0; }
+  .card h2 { margin-top: 0; font-size: 1.1em; }
+  .bm-link {
+    display: inline-block; background: #c0392b; color: #fff !important;
+    padding: 10px 18px; border-radius: 6px; text-decoration: none;
+    font-size: 1em; cursor: move; margin: 10px 0;
+  }
+  .bm-link:hover { background: #922b21; }
+  ol { line-height: 1.9; }
+  .note { background: #fdf2f0; border-left: 4px solid #c0392b; padding: 10px 14px; font-size: 0.9em; }
+  code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+  .fix-badge { background:#27ae60;color:#fff;font-size:0.75em;padding:2px 7px;border-radius:10px;vertical-align:middle;margin-left:8px; }
+</style>
+</head>
+<body>
+
+<h1>🚗 Inpart — Extractor de Cotizaciones</h1>
+<p>Arrastra el botón rojo a tu barra de marcadores. Úsalo en <strong>inpart-la.audatex.com.mx</strong> con sesión iniciada.</p>
+
+<div class="card">
+  <h2>📋 Inpart: Extraer Cotización <span class="fix-badge">v7</span></h2>
+  <p>Abre una cotización y haz clic en este marcador desde cualquier pestaña.</p>
+  <p>Cambia automáticamente a <strong>Datos</strong> para cargar la info de la cotización, luego vuelve a <strong>Items</strong> para extraer las piezas.</p>
+
+  <a class="bm-link" href="javascript:(function(){var d=document;function nextVal(label){var all=[...d.querySelectorAll('td,th')];var kw=label.toLowerCase();for(var i=0;i&lt;all.length;i++){var ct=all[i].textContent.replace(/\s+/g,' ').trim().toLowerCase();if(ct.indexOf(kw)===0&amp;&amp;ct.length&lt;kw.length+10){var par=all[i].parentElement;if(par){var kids=[...par.children].filter(function(e){return/^T[DH]$/.test(e.tagName);});var idx=kids.indexOf(all[i]);if(idx>=0&amp;&amp;kids[idx+1]){var v=kids[idx+1].textContent.replace(/\s+/g,' ').trim();if(v&amp;&amp;v.length&lt;300)return v;}}}}return'';}function findVIN(){var m=d.body.textContent.match(/\b[A-HJ-NPR-Z0-9]{17}\b/);return m?m[0]:'';}var data={cotizacion_id:'',siniestro:'',aseguradora:'',valuador:'',matricula:'',vin:'',ano_modelo:'',armadora:'',taller:'',partes:[]};function extractDatos(){var cotRaw=nextVal('n\xfamero cotizaci\xf3n');data.cotizacion_id=(cotRaw.match(/(\d{4,6})/)||['',''])[1];data.siniestro=nextVal('n\xfamero siniestro');data.aseguradora=nextVal('aseguradora');data.valuador=nextVal('nombre valuador');data.matricula=nextVal('matricula')||nextVal('matr\xedcula');data.armadora=nextVal('armadora');data.ano_modelo=nextVal('a\xf1o modelo');data.taller=nextVal('taller mec\xe1nico');data.vin=nextVal('chasis')||findVIN();}function extractItems(){var rows=[...d.querySelectorAll('tr')];var partes=[];for(var i=0;i&lt;rows.length;i++){var cells=[...rows[i].querySelectorAll('td')];if(cells.length!==6)continue;var c0=cells[0].innerText.trim();var desc=cells[4].innerText.trim();if(c0!=='')continue;if(!desc||desc.length&lt;3)continue;if(/^(Original|Gen[e\xe9]|Tipo|Elija|N[u\xfa]mero|Fecha|Aseg|Taller|Stock|Pieza|Ref)/i.test(desc))continue;var parte=cells[2].innerText.trim();partes.push({parte:parte,descripcion:desc});}data.partes=partes;}function finish(){var json=JSON.stringify(data,null,2);var msg;if(data.partes.length>0){msg='✓ COT '+data.cotizacion_id+': '+data.partes.length+' pieza(s)\n'+data.armadora+' '+data.ano_modelo+' | '+data.aseguradora+'\n\nHaz clic en INPART en Excel.';}else{var peek=d.body.innerText.substring(0,200).replace(/\n/g,' | ');msg='⚠ Sin piezas. Verifica estar en la cotizaci\xf3n correcta.\nBody: '+peek;}navigator.clipboard.writeText(json).then(function(){alert(msg);}).catch(function(){var ta=d.createElement('textarea');ta.value=json;d.body.appendChild(ta);ta.select();d.execCommand('copy');d.body.removeChild(ta);alert(msg);});}function findTab(re){return[...d.querySelectorAll('a,button')].find(function(el){return re.test(el.innerText.trim())&amp;&amp;el.offsetParent!==null;});}var datosTab=findTab(/datos\s*cotizaci/i);var itemsTab=findTab(/items?\s*cotizaci/i);if(datosTab&amp;&amp;itemsTab){datosTab.click();setTimeout(function(){extractDatos();itemsTab.click();setTimeout(function(){extractItems();finish();},200);},2000);}else{extractDatos();extractItems();finish();}})();">🚗 Inpart: Extraer Cotización</a>
+
+  <div class="note">
+    <strong>Cómo funciona v7:</strong>
+    <ul>
+      <li><strong>Cambia pestaña automáticamente</strong>: hace clic en "Datos Cotización" → espera 2 segundos para que cargue el AJAX → extrae COT#, siniestro, aseguradora, VIN, matrícula, taller → vuelve a "Items Cotización" → extrae piezas</li>
+      <li>Extrae piezas leyendo la <strong>columna PartNumber</strong> (celda 2) — no el Part Serial Number interno de Audatex (celda 3)</li>
+      <li><code>parte</code> = PartNumber del fabricante (puede ser vacío); <code>descripcion</code> = Descripción Pieza</li>
+      <li><code>nextVal</code> usa <code>parentElement.children</code> (hijos directos) para evitar confusión con tablas anidadas</li>
+    </ul>
+    <strong>Instrucciones:</strong>
+    <ol>
+      <li>Abre la cotización → pestaña <strong>Items Cotización</strong></li>
+      <li>Haz clic en el marcador rojo</li>
+      <li>Lee la confirmación: "COT XXXX: N pieza(s)"</li>
+      <li>En Excel, haz clic en <strong>INPART</strong></li>
+    </ol>
+    <p>Si la alerta dice "Sin piezas", asegúrate de estar en la pestaña <em>Items Cotización</em> (no en Datos Cotización).</p>
+  </div>
+</div>
+
+</body>
+</html>
