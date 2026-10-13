@@ -3,3 +3,19 @@ dist/
 .env
 .env.local
 .env*.local
+
+# lleva la anon key adentro (lo arma tools/build_avk_worker.py)
+avk_worker_bookmarklet.html
+
+# --- 13-oct-2026: fuera del repo ---
+# credenciales en texto plano (rotar y limpiar el archivo)
+SESSION_SUMMARY.md
+# datos pesados / generados
+auvika_csvs/*.csv
+auvika_csvs/*.db
+auvika_csvs/*.db-journal
+__pycache__/
+*.pyc
+Claude outputs/
+# datos del negocio, no código
+DESPACHO MASTERPARTES.xlsx

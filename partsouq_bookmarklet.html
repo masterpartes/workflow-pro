@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>PartSouq — Bookmarklet Extractor</title>
+<style>
+  body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #222; }
+  h1 { color: #1f4e79; }
+  .card { border: 2px solid #1f4e79; border-radius: 8px; padding: 20px; margin: 24px 0; }
+  .card h2 { margin-top: 0; font-size: 1.1em; }
+  .bm-link {
+    display: inline-block; background: #1f4e79; color: #fff !important;
+    padding: 10px 18px; border-radius: 6px; text-decoration: none;
+    font-size: 1em; cursor: move; margin: 10px 0;
+  }
+  .bm-link:hover { background: #163a5c; }
+  ol { line-height: 1.9; }
+  .note { background: #eaf1fb; border-left: 4px solid #1f4e79; padding: 10px 14px; font-size: 0.9em; }
+  code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+  .fix-badge { background:#27ae60;color:#fff;font-size:0.75em;padding:2px 7px;border-radius:10px;vertical-align:middle;margin-left:8px; }
+</style>
+</head>
+<body>
+
+<h1>🔧 PartSouq — Extractor de Precios (Lote)</h1>
+<p>Arrastra el botón azul a tu barra de marcadores. Úsalo en <strong>partsouq.com</strong> con sesión iniciada.</p>
+
+<div class="card">
+  <h2>📋 PartSouq: Procesar Lista <span class="fix-badge">v7</span></h2>
+  <p>Vacía el carrito antes de cada pieza y mide el envío <strong>standalone</strong> (como si se enviara sola) — correcto para adjudicación independiente por parte.</p>
+
+  <a class="bm-link" href="javascript:(function(){
+var STORE_KEY=&#x27;psq_batch_results_v1&#x27;;
+function loadResults(){try{return JSON.parse(localStorage.getItem(STORE_KEY))||[];}catch(e){return[];}}
+function saveResults(arr){localStorage.setItem(STORE_KEY,JSON.stringify(arr));}
+function upsert(arr,entry){var idx=arr.findIndex(function(x){return x.parte===entry.parte;});if(idx&gt;=0)arr[idx]=entry;else arr.push(entry);return arr;}
+function waitFor(cond,timeout,interval){timeout=timeout||10000;interval=interval||200;return new Promise(function(resolve){var t0=Date.now();var iv=setInterval(function(){var ok=false;try{ok=cond();}catch(e){}if(ok){clearInterval(iv);resolve(true);}else if(Date.now()-t0&gt;timeout){clearInterval(iv);resolve(false);}},interval);});}
+async function checkExists(partNumber){var res=await fetch(&#x27;https://partsouq.com/en/search/all?q=&#x27;+encodeURIComponent(partNumber),{credentials:&#x27;same-origin&#x27;});var html=await res.text();var doc=new DOMParser().parseFromString(html,&#x27;text/html&#x27;);return !!doc.querySelector(&#x27;.search-product-card&#x27;);}
+async function clearCartInIframe(d,w){
+try{w.confirm=function(){return true;};}catch(e){}
+var clearAll=d.querySelector(&#x27;a.mini-cart-clear&#x27;);
+if(clearAll){
+clearAll.click();
+await waitFor(function(){return !d.querySelector(&#x27;a.mini-cart-remove-button&#x27;);},6000,300);
+await new Promise(function(r){setTimeout(r,500);});
+return;
+}
+var removeBtns=Array.from(d.querySelectorAll(&#x27;a.mini-cart-remove-button&#x27;));
+for(var i=0;i&lt;removeBtns.length;i++){
+removeBtns[i].click();
+await new Promise(function(r){setTimeout(r,1000);});
+}
+if(removeBtns.length&gt;0){
+await waitFor(function(){return !d.querySelector(&#x27;a.mini-cart-remove-button&#x27;);},5000,300);
+await new Promise(function(r){setTimeout(r,300);});
+}
+}
+async function priceOne(partNumber){
+var exists=await checkExists(partNumber);
+if(!exists)return{parte:partNumber,ok:false,reason:&#x27;no encontrado&#x27;};
+var iframe=document.createElement(&#x27;iframe&#x27;);
+iframe.style.cssText=&#x27;position:fixed;top:-3000px;left:-3000px;width:900px;height:700px;&#x27;;
+iframe.src=&#x27;https://partsouq.com/en/search/all?q=&#x27;+encodeURIComponent(partNumber);
+document.body.appendChild(iframe);
+var gotCard=await waitFor(function(){return iframe.contentDocument&amp;&amp;iframe.contentDocument.querySelector(&#x27;.search-product-card&#x27;);},12000);
+if(!gotCard){iframe.remove();return{parte:partNumber,ok:false,reason:&#x27;no cargo la pagina&#x27;};}
+var d=iframe.contentDocument;var w=iframe.contentWindow;
+var descEl=d.querySelector(&#x27;h1.part-col-list-h4&#x27;);
+var descripcion=descEl?descEl.textContent.trim():&#x27;&#x27;;
+var makeVal=&#x27;&#x27;;var weightKg=null;
+var infoItems=d.querySelectorAll(&#x27;.search-product-card-info-item&#x27;);
+for(var j=0;j&lt;infoItems.length;j++){var lbl=infoItems[j].querySelector(&#x27;.search-product-card-info-label&#x27;);var val=infoItems[j].querySelector(&#x27;.search-product-card-info-value&#x27;);if(!lbl||!val)continue;if(lbl.textContent.indexOf(&#x27;Make&#x27;)&gt;=0)makeVal=val.textContent.trim();if(lbl.textContent.indexOf(&#x27;Weight&#x27;)&gt;=0){var wt=parseFloat(val.textContent.trim());if(!isNaN(wt))weightKg=wt;}}
+var priceEl=d.querySelector(&#x27;.search-product-price&#x27;);
+var itemPrice=0;
+if(priceEl){var pm=priceEl.textContent.match(/(\d+\.?\d*)/);if(pm)itemPrice=parseFloat(pm[1]);}
+var addBtn=d.querySelector(&#x27;form.js-ajax-add-to-cart button[type=&quot;submit&quot;]&#x27;);
+if(!addBtn){iframe.remove();return{parte:partNumber,ok:true,descripcion:descripcion,make:makeVal,item_price:itemPrice,shipping:0,weight_kg:weightKg,price:itemPrice,url:&#x27;https://partsouq.com/en/search/all?q=&#x27;+encodeURIComponent(partNumber),note:&#x27;sin stock&#x27;};}
+await clearCartInIframe(d,w);
+addBtn.click();
+await waitFor(function(){return /Shipping[\s\t]*([\d.]+)\$/.test(d.body.innerText);},10000);
+await new Promise(function(r){setTimeout(r,400);});
+var shipMatch=d.body.innerText.match(/Shipping[\s\t]*([\d.]+)\$/);
+var shipping=shipMatch?parseFloat(shipMatch[1]):0;
+var url=w.location.href;
+iframe.remove();
+return{parte:partNumber,ok:true,descripcion:descripcion,make:makeVal,item_price:itemPrice,shipping:shipping,weight_kg:weightKg,price:Math.round((itemPrice+shipping)*100)/100,url:url};
+}
+function ensureOverlay(){var old=document.getElementById(&#x27;psq-batch-overlay&#x27;);if(old)old.remove();var box=document.createElement(&#x27;div&#x27;);box.id=&#x27;psq-batch-overlay&#x27;;box.style.cssText=&#x27;position:fixed;top:16px;right:16px;z-index:2147483647;background:#1f4e79;color:#fff;font-family:Arial,sans-serif;font-size:13px;padding:14px 16px;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.35);width:290px;max-height:80vh;overflow:auto;&#x27;;document.body.appendChild(box);return box;}
+function render(box,state){var results=loadResults();var okCount=results.filter(function(r){return r.ok;}).length;var html=&#x27;&lt;div style=&quot;font-weight:bold;margin-bottom:8px;&quot;&gt;🔧 PartSouq — Lote&lt;/div&gt;&#x27;;html+=&#x27;&lt;div style=&quot;margin-bottom:8px;&quot;&gt;&#x27;+state.msg+&#x27;&lt;/div&gt;&#x27;;if(state.list&amp;&amp;state.list.length){html+=&#x27;&lt;div style=&quot;background:rgba(255,255,255,.15);border-radius:6px;height:8px;margin-bottom:8px;overflow:hidden;&quot;&gt;&lt;div style=&quot;background:#7fd858;height:100%;width:&#x27;+(100*state.done/state.list.length).toFixed(0)+&#x27;%;&quot;&gt;&lt;/div&gt;&lt;/div&gt;&#x27;;}html+=&#x27;&lt;div style=&quot;margin-bottom:10px;&quot;&gt;Acumulado: &lt;b&gt;&#x27;+okCount+&#x27;&lt;/b&gt; pieza(s) con precio&#x27;+(results.length&gt;okCount?&#x27;, &#x27;+(results.length-okCount)+&#x27; no encontrada(s)&#x27;:&#x27;&#x27;)+&#x27; &lt;/div&gt;&#x27;;html+=&#x27;&lt;button id=&quot;psq-copy&quot; style=&quot;background:#fff;color:#1f4e79;border:none;border-radius:6px;padding:7px 10px;font-weight:bold;cursor:pointer;margin-right:6px;&quot;&gt;Copiar JSON&lt;/button&gt;&#x27;;html+=&#x27;&lt;button id=&quot;psq-clear&quot; style=&quot;background:transparent;color:#fff;border:1px solid #fff;border-radius:6px;padding:7px 10px;cursor:pointer;&quot;&gt;Limpiar&lt;/button&gt;&#x27;;box.innerHTML=html;document.getElementById(&#x27;psq-copy&#x27;).onclick=function(){var okResults=loadResults().filter(function(r){return r.ok;}).map(function(r){return{parte:r.parte,descripcion:r.descripcion,make:r.make,item_price:r.item_price,shipping:r.shipping,weight_kg:r.weight_kg,price:r.price,url:r.url};});var json=JSON.stringify(okResults,null,2);if(navigator.clipboard&amp;&amp;navigator.clipboard.writeText){navigator.clipboard.writeText(json).then(function(){alert(&#x27;JSON copiado (&#x27;+okResults.length+&#x27; piezas). Pega en Excel &gt; Importar PartSouq.&#x27;);});}else{window.prompt(&#x27;Copia este JSON manualmente:&#x27;,json);}};document.getElementById(&#x27;psq-clear&#x27;).onclick=function(){localStorage.removeItem(STORE_KEY);render(box,{msg:&#x27;Acumulado borrado. Corre el marcador de nuevo para procesar tu lista.&#x27;});};}
+async function main(){var box=ensureOverlay();render(box,{msg:&#x27;Leyendo lista de partes...&#x27;});var raw=&#x27;&#x27;;try{if(navigator.clipboard&amp;&amp;navigator.clipboard.readText)raw=await navigator.clipboard.readText();}catch(e){raw=&#x27;&#x27;;}if(!raw||!raw.trim()){raw=window.prompt(&#x27;Pega la lista de partes (una por linea):&#x27;,&#x27;&#x27;)||&#x27;&#x27;;}var parts=raw.split(/\r?\n/).map(function(s){return s.trim();}).filter(function(s){return s.length&gt;0;});var seen={};parts=parts.filter(function(p){if(seen[p])return false;seen[p]=true;return true;});if(!parts.length){render(box,{msg:&#x27;No se encontro ninguna parte en el portapapeles/texto pegado.&#x27;});return;}var results=loadResults();for(var i=0;i&lt;parts.length;i++){render(box,{msg:&#x27;Procesando &#x27;+(i+1)+&#x27;/&#x27;+parts.length+&#x27;: &#x27;+parts[i],list:parts,done:i});var entry=await priceOne(parts[i]);upsert(results,entry);saveResults(results);await new Promise(function(r){setTimeout(r,500);});}render(box,{msg:&#x27;Listo. &#x27;+parts.length+&#x27; pieza(s) procesadas.&#x27;,list:parts,done:parts.length});}
+main();
+})();">🔧 PartSouq: Procesar Lista (v7)</a>
+
+  <div class="note">
+    <strong>Qué cambió en v7 (carrito limpio, envío standalone — septiembre 2026):</strong>
+    <ul>
+      <li>Abandona el enfoque de delta (v6) que calculaba el envío como diferencia marginal. v7 vacía el carrito antes de cada pieza y mide el <b>envío standalone real</b> — lo que costaría enviar esa sola pieza. Esto es correcto para adjudicación independiente por parte por parte de la aseguradora.</li>
+      <li>Para vaciar el carrito: busca el botón <code>a.mini-cart-clear</code> (vaciar todo) en el widget del carrito de la página de resultados, le sobreescribe <code>confirm</code> para aceptar automáticamente, y lo hace clic. Si no hay ese botón (carrito vacío), procede directo.</li>
+      <li>Espera a que desaparezcan los botones <code>a.mini-cart-remove-button</code> antes de agregar la siguiente pieza.</li>
+    </ul>
+    <strong>Instrucciones:</strong>
+    <ol>
+      <li>En Excel, corre <strong>OEM PX</strong> primero → luego clic en <strong>"Lista PartSouq"</strong> (copia al portapapeles)</li>
+      <li>Abre <a href="https://partsouq.com" target="_blank">partsouq.com</a> con sesión iniciada</li>
+      <li>Haz clic en el marcador azul — espera mientras procesa toda la lista</li>
+      <li>Cuando diga "Listo", clic en <strong>"Copiar JSON"</strong></li>
+      <li>En Excel, clic en <strong>"Importar PartSouq"</strong></li>
+    </ol>
+    <strong>"Limpiar"</strong> borra el acumulado — úsalo al empezar cotización nueva.
+  </div>
+</div>
+
+</body>
+</html>

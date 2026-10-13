@@ -44,7 +44,7 @@ async def _screenshot(page, name: str):
     DEBUG_DIR.mkdir(exist_ok=True)
     path = DEBUG_DIR / f"{name}_{datetime.now().strftime('%H%M%S')}.png"
     await page.screenshot(path=str(path), full_page=True)
-    print(f"  [debug] screenshot → {path.name}")
+    print(f"  [debug] screenshot -> {path.name}")
 
 
 async def _dump_html(page, name: str):
@@ -52,7 +52,7 @@ async def _dump_html(page, name: str):
     DEBUG_DIR.mkdir(exist_ok=True)
     path = DEBUG_DIR / f"{name}_{datetime.now().strftime('%H%M%S')}.html"
     path.write_text(await page.content(), encoding="utf-8")
-    print(f"  [debug] html dump  → {path.name}")
+    print(f"  [debug] html dump  -> {path.name}")
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
 
     date_from = (datetime.now() - timedelta(days=days_back)).strftime("%d/%m/%Y")
     date_to   = datetime.now().strftime("%d/%m/%Y")
-    print(f"[inpart] Date range: {date_from} → {date_to}")
+    print(f"[inpart] Date range: {date_from} -> {date_to}")
 
     # ── Set Status = Pendiente FIRST ───────────────────────────────────────
     # Must be done before filling dates: the status dropdown has AutoPostBack
@@ -223,7 +223,7 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
             for opt in options:
                 if "pendiente" in opt.get("t", "").lower():
                     await selects.nth(i).select_option(value=opt["v"])
-                    print(f"[inpart] Status filter → {opt['t']}")
+                    print(f"[inpart] Status filter -> {opt['t']}")
                     break
     except Exception as e:
         print(f"[inpart] WARNING: could not set status filter: {e}")
@@ -257,7 +257,7 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
             // Priority 3: inputs that already hold a dd/mm/yyyy value
             if (dateInputs.length < 2) {{
                 dateInputs = allInputs.filter(el =>
-                    /\d{{2}}\/\d{{2}}\/\d{{4}}/.test(el.value)
+                    /\\d{{2}}\\/\\d{{2}}\\/\\d{{4}}/.test(el.value)
                 );
             }}
 
@@ -370,9 +370,9 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
                     ? cells[i].innerText.trim() : '';
 
                 const cotId = g(idx.cot);
-                if (!cotId || !/\d{3,}/.test(cotId)) continue;
+                if (!cotId || !/\\d{3,}/.test(cotId)) continue;
 
-                const m = cotId.match(/\d+/);
+                const m = cotId.match(/\\d+/);
                 if (!m) continue;
 
                 // Extract the Visualizar detail URL from the row's button/link
@@ -425,7 +425,7 @@ async def get_pending_quotations(page, days_back=7, debug=False) -> list[dict]:
         q["vin"]   = None
         q["partes"] = []
         quotations.append(q)
-        print(f"[inpart]   → COT {q['cotizacion_id']} | {q['aseguradora']} | "
+        print(f"[inpart]   -> COT {q['cotizacion_id']} | {q['aseguradora']} | "
               f"{q['matricula']} | {q['pendientes']} piezas pendientes")
 
     print(f"[inpart] Found {len(quotations)} pending quotation(s).")
@@ -777,15 +777,15 @@ async def _scrape_case_info(page) -> dict:
                     const label = cells[i].innerText.trim().toLowerCase();
                     const value = cells[i + 1].innerText.trim();
                     if (!label || !value) continue;
-                    if (label.includes('chasis')) result.vin = value;
-                    else if (label.includes('matr')) result.matricula = value;
-                    else if (label.includes('siniestro')) result.siniestro = value;
-                    else if (label.includes('aseguradora')) result.aseguradora = value;
-                    else if (label.includes('taller')) result.taller = value;
-                    else if (label.includes('armadora')) result.armadora = value;
-                    else if (label.includes('año modelo') || label.includes('ano modelo')) result.ano_modelo = value;
-                    else if (label.includes('valuador')) result.valuador = value;
-                    else if (label.includes('póliza') || label.includes('poliza')) result.poliza = value;
+                    if (label.includes('chasis') || label === 'vin' || label.includes('chassis') || label.includes('num. chasis') || label.includes('no. chasis')) result.vin = result.vin || value;
+                    else if (label.includes('matr') || label.includes('placa')) result.matricula = result.matricula || value;
+                    else if (label.includes('siniestro') || label.includes('expediente')) result.siniestro = result.siniestro || value;
+                    else if (label.includes('aseguradora') || label.includes('asegura') || label.includes('insurer')) result.aseguradora = result.aseguradora || value;
+                    else if (label.includes('taller') || label.includes('bodyshop')) result.taller = result.taller || value;
+                    else if (label.includes('armadora') || label.includes('fabricante')) result.armadora = result.armadora || value;
+                    else if (label.includes('año modelo') || label.includes('ano modelo') || label.includes('year model')) result.ano_modelo = result.ano_modelo || value;
+                    else if (label.includes('valuador') || label.includes('evaluador')) result.valuador = result.valuador || value;
+                    else if (label.includes('póliza') || label.includes('poliza')) result.poliza = result.poliza || value;
                 }}
             }}
             return result;

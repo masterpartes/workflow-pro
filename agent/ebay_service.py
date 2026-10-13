@@ -125,11 +125,22 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
     Search eBay for a part number (new + Buy It Now + ships to Miami FL 33195).
     Makes two concurrent calls: all listings + brand-filtered genuine (when brand known).
     Returns cheapest prices only — no averages needed.
+
+    Genuine vs. aftermarket is decided per listing, not solely by the brand-
+    filtered call: a listing counts as genuine if EITHER eBay's structured
+    Brand aspect matched the vehicle brand, OR its title contains a genuine/
+    OEM keyword. Sellers frequently leave the structured Brand field blank
+    even when the title plainly says "OEM Genuine" — relying on the brand
+    filter alone was misclassifying those as aftermarket.
+
+    price_min/total_min: total_min is price + cheapest shipping to
+    SHIPPING_ZIP — use that for pricing decisions, not price_min alone,
+    since shipping is often a large fraction of these parts' cost.
     """
     _empty = {"count": 0, "price_min": None, "total_min": None}
     result = {
         "found": False, "listing_count": 0,
-        "genuine": dict(_empty), "all": dict(_empty),
+        "genuine": dict(_empty), "aftermarket": dict(_empty),
         "currency": "USD", "url": "", "error": None,
     }
 
@@ -138,12 +149,14 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
         result["error"] = "no_credentials"
         return result
 
-    query = part_number.strip()
+    # Strip spaces and dashes so eBay treats the part number as a single token
+    # rather than multiple independent keywords. "205 620 01 98" → "2056200198".
+    query = part_number.strip().replace(" ", "").replace("-", "").upper()
     genuine_brand = GENUINE_BRAND_FILTER.get(brand.lower()) if brand else None
 
     result["url"] = (
         "https://www.ebay.com/sch/6028/i.html"
-        + "?_nkw=" + part_number.replace(" ", "+")
+        + "?_nkw=" + query
         + "&LH_BIN=1&LH_ItemCondition=1000&LH_Shipped_to=US"
     )
 
@@ -167,6 +180,9 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
         "filter":       "conditionIds:{1000},buyingOptions:{FIXED_PRICE}",
     }
 
+    genuine_items: dict = {}       # itemId -> (price, shipping)
+    aftermarket_items: dict = {}   # itemId -> (price, shipping)
+
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             # Fire primary call + optional brand-filtered genuine call concurrently
@@ -177,11 +193,20 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
                 # silently ignores. Build the URL manually to keep it raw.
                 import urllib.parse as _up
                 _base_qs = _up.urlencode(base_params)
-                g_url = f"{EBAY_BROWSE_URL}?{_base_qs}&aspect_filter=Brand:{genuine_brand}"
+                # eBay's Browse API requires the category ID embedded IN the
+                # aspect_filter value itself (aspect_filter=categoryId:<id>,
+                # <aspect>:<value>) — without it, eBay can't resolve which
+                # category's aspect schema "Brand" belongs to and silently
+                # returns zero matches, even for listings that do have the
+                # Brand aspect set. This was why "genuine" was always empty.
+                g_url = (
+                    f"{EBAY_BROWSE_URL}?{_base_qs}"
+                    f"&aspect_filter=categoryId:{AUTO_PARTS_CATEGORY},Brand:{genuine_brand}"
+                )
                 calls.append(client.get(g_url, headers=headers))
             responses = await asyncio.gather(*calls, return_exceptions=True)
 
-        # ── primary (all listings) ────────────────────────────────────────
+        # ── primary (all listings) — classify each by title ───────────────
         resp = responses[0]
         if isinstance(resp, Exception):
             result["error"] = str(resp)
@@ -190,18 +215,21 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
             items = data.get("itemSummaries", [])
             total = data.get("total", 0)
             if items:
-                ps = []
+                result["found"] = True
+                result["listing_count"] = total
+                result["currency"] = items[0].get("price", {}).get("currency", "USD")
                 for it in items:
                     try:
-                        ps.append((float(it["price"]["value"]), _shipping_cost(it)))
+                        item_id = it.get("itemId") or it.get("itemWebUrl", "")
+                        price   = float(it["price"]["value"])
+                        ship    = _shipping_cost(it)
                     except (KeyError, ValueError, TypeError):
                         continue
-                if ps:
-                    result.update({
-                        "found": True, "listing_count": total,
-                        "all": _bucket_stats(ps),
-                        "currency": items[0].get("price", {}).get("currency", "USD"),
-                    })
+                    title = it.get("title", "")
+                    if _classify(title) == "genuine":
+                        genuine_items[item_id] = (price, ship)
+                    else:
+                        aftermarket_items[item_id] = (price, ship)
             else:
                 print(f"[ebay] {part_number}: no Buy-It-Now new listings found")
         elif resp.status_code == 401:
@@ -210,33 +238,39 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
             result["error"] = "token_expired"
         else:
             result["error"] = f"http_{resp.status_code}"
-            print(f"[ebay] {part_number}: HTTP {resp.status_code} — {resp.text[:200]}")
+            print(f"[ebay] {part_number}: HTTP {resp.status_code} - {resp.text[:200]}")
 
-        # ── genuine (brand-filtered) ──────────────────────────────────────
+        # ── genuine (brand-filtered, structured Brand aspect) ─────────────
+        # A structured Brand match is also treated as genuine even if the
+        # title didn't say so, and moves the listing out of aftermarket if
+        # it landed there from the primary call.
         if len(responses) > 1:
             resp2 = responses[1]
             if isinstance(resp2, Exception):
-                print(f"[ebay-genuine] {part_number}: call failed — {resp2}")
+                print(f"[ebay-genuine] {part_number}: call failed - {resp2}")
             elif resp2.status_code == 200:
                 g_data = resp2.json()
                 g_items = g_data.get("itemSummaries", [])
                 g_total = g_data.get("total", 0)
-                print(f"[ebay-genuine] {part_number}: Brand:{genuine_brand} → {g_total} listings")
-                if g_items:
-                    gps = []
-                    for it in g_items:
-                        try:
-                            gps.append((float(it["price"]["value"]), _shipping_cost(it)))
-                        except (KeyError, ValueError, TypeError):
-                            continue
-                    if gps:
-                        result["genuine"] = _bucket_stats(gps)
+                print(f"[ebay-genuine] {part_number}: Brand:{genuine_brand} -> {g_total} listings")
+                for it in g_items:
+                    try:
+                        item_id = it.get("itemId") or it.get("itemWebUrl", "")
+                        price   = float(it["price"]["value"])
+                        ship    = _shipping_cost(it)
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                    aftermarket_items.pop(item_id, None)
+                    genuine_items[item_id] = (price, ship)
             else:
                 print(f"[ebay-genuine] {part_number}: HTTP {resp2.status_code}")
 
-        g = result["genuine"]; a = result["all"]
+        result["genuine"]     = _bucket_stats(list(genuine_items.values()))
+        result["aftermarket"] = _bucket_stats(list(aftermarket_items.values()))
+
+        g = result["genuine"]; a = result["aftermarket"]
         print(f"[ebay] {part_number}: total={result['listing_count']} | "
-              f"all_min=${a['price_min']} | genuine_min=${g['price_min']}")
+              f"aftermarket_min=${a['price_min']} | genuine_min=${g['price_min']}")
 
     except httpx.TimeoutException:
         result["error"] = "timeout"

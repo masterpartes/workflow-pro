@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AVK Parts Bookmarklets</title>
+<style>
+  body { font-family: sans-serif; max-width: 680px; margin: 40px auto; padding: 0 20px; color: #222; }
+  h1 { color: #2e7d32; }
+  .card { border: 2px solid #2e7d32; border-radius: 8px; padding: 20px; margin: 24px 0; }
+  .card h2 { margin-top: 0; font-size: 1.1em; }
+  .bm-link {
+    display: inline-block; background: #2e7d32; color: #fff !important;
+    padding: 10px 18px; border-radius: 6px; text-decoration: none;
+    font-size: 1em; cursor: move; margin: 10px 0;
+  }
+  .bm-link:hover { background: #1b5e20; }
+  ol { line-height: 1.8; }
+  .note { background: #f1f8e9; border-left: 4px solid #2e7d32; padding: 10px 14px; font-size: 0.9em; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 32px 0; }
+</style>
+</head>
+<body>
+
+<h1>AVK Parts Bookmarklets</h1>
+<p>Drag each green button to your bookmarks bar. Use them on <strong>avkparts.lt</strong> while logged in.</p>
+
+<div class="card">
+  <h2>📋 Step 1 — AVK: Fill Search</h2>
+  <p>Click this on <code>avkparts.lt</code> with the <strong>Bulk parts search</strong> modal open.
+     It reads your clipboard (one OE number per line) and submits the search automatically.</p>
+
+  <a class="bm-link" href="javascript:(function(){if(!location.hostname.includes('avkparts')){alert('Run this on avkparts.lt');return;}var ta=document.querySelector('textarea');if(!ta){var btns=Array.from(document.querySelectorAll('button,a'));var b=btns.find(function(x){return/bulk/i.test(x.textContent);});if(b){b.click();setTimeout(function(){var ta2=document.querySelector('textarea');if(ta2)fill(ta2);else alert('Bulk search textarea not found after clicking button.');},600);}else{alert('Open the Bulk parts search modal first, then click this bookmark.');}return;}fill(ta);function fill(ta){navigator.clipboard.readText().then(function(txt){var lines=txt.split('\n').map(function(s){return s.trim();}).filter(Boolean);if(!lines.length){alert('Clipboard is empty — copy part numbers first (one per line).');return;}var setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(ta,lines.join('\n'));ta.dispatchEvent(new Event('input',{bubbles:true}));ta.dispatchEvent(new Event('change',{bubbles:true}));setTimeout(function(){var all=Array.from(document.querySelectorAll('button'));var sb=all.find(function(b){return/start|search/i.test(b.textContent)&&b.offsetParent;});if(sb){sb.click();}else{alert('Filled '+lines.length+' parts — click the search button manually.');}},300);}).catch(function(){var txt=prompt('Clipboard blocked. Paste part numbers here (one per line):');if(!txt)return;var setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;setter.call(ta,txt.trim());ta.dispatchEvent(new Event('input',{bubbles:true}));});}})();">AVK: Fill Search</a>
+
+  <ol>
+    <li>Copy OE part numbers to clipboard (one per line)</li>
+    <li>Go to <strong>avkparts.lt</strong> and open the Bulk parts search modal</li>
+    <li>Click <strong>AVK: Fill Search</strong> — it fills and submits automatically</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h2>📊 Step 2 — AVK: Get Prices <span style="background:#27ae60;color:#fff;font-size:0.75em;padding:2px 7px;border-radius:10px;vertical-align:middle;margin-left:8px;">v3 — auto-copy</span></h2>
+  <p>After the results load, click this. It extracts all prices, shows a summary overlay,
+     and <strong>copies the results as JSON to your clipboard automatically</strong> — no need to click a copy button, just switch to Excel and click AVKI.</p>
+  <p class="note"><strong>v2 fix:</strong> the original version scraped for <code>&lt;table&gt;</code>/<code>&lt;tr&gt;</code> elements, but avkparts.lt's bulk results aren't a table at all (it's div-based), so it silently found zero rows every time. Rewritten against the real structure: <code>.bulk_single_item</code> (one per searched part, with the searched code in <code>.single_bulk_code</code>) containing several <code>.item</code> rows (one per supplier), each with <code>.column_provider</code> (supplier code, e.g. "PSA E"), <code>.column_price_no_tax</code> and <code>.column_price_with_tax</code>. Verified against a real 13-part bulk search (115 supplier rows extracted correctly). Also fixed the price parser, which was mangling decimals (misreading "€81.85" as 8185).</p>
+  <p class="note"><strong>v3 fix:</strong> copying used to require clicking "Copy JSON" in the overlay — if you skipped that (or the click didn't register), Importar AVK in Excel would fail with a generic error, since it just found whatever was already on the clipboard from before. Now the JSON copies the instant the overlay appears; the button is only there in case you need to copy it again.</p>
+
+  <a class="bm-link" href="javascript:(function(){ if(!location.hostname.includes(&#x27;avkparts&#x27;)){alert(&#x27;Run this on avkparts.lt&#x27;);return;} var existing = document.getElementById(&#x27;_avk_overlay&#x27;); if (existing){ existing.remove(); return; } function parsePrice(el){ if(!el) return null; var m = el.textContent.match(/€\s*([\d.,]+)/); if(!m) return null; return parseFloat(m[1].replace(/,/g,&#x27;&#x27;)); } var groups = document.querySelectorAll(&#x27;.bulk_single_item&#x27;); var rows = []; groups.forEach(function(g){ var codeEl = g.querySelector(&#x27;.single_bulk_code&#x27;); var partCode = codeEl ? codeEl.textContent.trim().toUpperCase() : &#x27;&#x27;; var items = g.querySelectorAll(&#x27;.item&#x27;); items.forEach(function(item){ var providerEl = item.querySelector(&#x27;.column_provider&#x27;); var supplier = providerEl ? providerEl.textContent.trim() : &#x27;&#x27;; var priceNet = parsePrice(item.querySelector(&#x27;.column_price_no_tax&#x27;)); var priceGross = parsePrice(item.querySelector(&#x27;.column_price_with_tax&#x27;)); if (priceNet == null &amp;&amp; priceGross == null) return; rows.push({part: partCode, supplier: supplier, price_net: priceNet, price_gross: priceGross}); }); }); if (!rows.length){ alert(&#x27;No price data found. Make sure the bulk search results have finished loading, then try again.&#x27;); return; } var json = JSON.stringify(rows.map(function(r){ return { part: r.part, supplier: r.supplier, price_eur: r.price_net }; }), null, 2); function copyJSON(onDone){ if (navigator.clipboard &amp;&amp; navigator.clipboard.writeText){ navigator.clipboard.writeText(json).then(function(){ onDone(true); }).catch(function(){ onDone(false); }); } else { onDone(false); } } function copyFallback(){ var ta = document.createElement(&#x27;textarea&#x27;); ta.value = json; document.body.appendChild(ta); ta.select(); document.execCommand(&#x27;copy&#x27;); ta.remove(); } var byPart = {}; rows.forEach(function(r){ (byPart[r.part] = byPart[r.part] || []).push(r); }); function pad(s, n){ s = String(s || &#x27;&#x27;); while (s.length &lt; n) s += &#x27; &#x27;; return s.substring(0, n); } var ov = document.createElement(&#x27;div&#x27;); ov.id = &#x27;_avk_overlay&#x27;; ov.style.cssText = &#x27;position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;border:2px solid #2e7d32;border-radius:10px;padding:18px 20px;max-width:480px;max-height:82vh;overflow-y:auto;box-shadow:0 6px 30px rgba(0,0,0,.35);font-family:monospace;font-size:13px;line-height:1.5;&#x27;; var hdr = &#x27;&lt;div style=&quot;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-family:sans-serif&quot;&gt;&#x27; + &#x27;&lt;strong style=&quot;font-size:15px&quot;&gt;AVK Results (&#x27; + rows.length + &#x27; filas, &#x27; + Object.keys(byPart).length + &#x27; piezas)&lt;/strong&gt;&#x27; + &#x27;&lt;button id=&quot;_avk_close&quot; style=&quot;border:none;background:#c00;color:#fff;border-radius:4px;padding:2px 10px;cursor:pointer;font-size:15px&quot;&gt;✕&lt;/button&gt;&#x27; + &#x27;&lt;/div&gt;&#x27;; var statusLine = &#x27;&lt;div id=&quot;_avk_status&quot; style=&quot;font-family:sans-serif;font-size:12px;color:#2e7d32;margin-bottom:10px;&quot;&gt;Copiando JSON al portapapeles…&lt;/div&gt;&#x27;; var body = &#x27;&#x27;; Object.keys(byPart).forEach(function(part){ var rs = byPart[part]; body += &#x27;&lt;div style=&quot;margin-bottom:10px&quot;&gt;&lt;span style=&quot;background:#e8f5e9;padding:2px 6px;border-radius:3px;font-weight:bold&quot;&gt;&#x27; + part + &#x27;&lt;/span&gt;&lt;br&gt;&#x27;; rs.forEach(function(r){ body += &#x27;&lt;span style=&quot;color:#333&quot;&gt; &#x27; + pad(r.supplier, 10) + (r.price_net != null ? &#x27; €&#x27; + r.price_net.toFixed(2) : &#x27;   ?   &#x27;) + (r.price_gross != null ? &#x27; / €&#x27; + r.price_gross.toFixed(2) : &#x27;&#x27;) + &#x27; &lt;/span&gt;&lt;br&gt;&#x27;; }); body += &#x27;&lt;/div&gt;&#x27;; }); var footer = &#x27;&lt;button id=&quot;_avk_copy&quot; style=&quot;margin-top:6px;background:#2e7d32;color:#fff;border:none;padding:7px 16px;border-radius:5px;cursor:pointer;font-family:sans-serif&quot;&gt;Copiar JSON de nuevo&lt;/button&gt;&#x27;; ov.innerHTML = hdr + statusLine + body + footer; document.body.appendChild(ov); document.getElementById(&#x27;_avk_close&#x27;).onclick = function(){ ov.remove(); }; document.getElementById(&#x27;_avk_copy&#x27;).onclick = function(){ copyJSON(function(ok){ if (!ok) copyFallback(); document.getElementById(&#x27;_avk_copy&#x27;).textContent = &#x27;Copiado!&#x27;; }); }; copyJSON(function(ok){ var status = document.getElementById(&#x27;_avk_status&#x27;); if (!status) return; if (ok){ status.textContent = &#x27;JSON copiado automáticamente (&#x27; + rows.length + &#x27; filas). Ya puedes ir a Excel y hacer clic en AVKI.&#x27;; } else { copyFallback(); status.textContent = &#x27;JSON copiado (modo alterno). Ya puedes ir a Excel y hacer clic en AVKI.&#x27;; } }); })();">AVK: Get Prices</a>
+
+  <ol>
+    <li>Wait for the AVK results to fully load</li>
+    <li>Click <strong>AVK: Get Prices</strong></li>
+    <li>An overlay shows all suppliers and prices — click <strong>Copy JSON</strong></li>
+    <li>The JSON is now in your clipboard (paste into Claude or wherever needed)</li>
+  </ol>
+
+  <p class="note"><strong>JSON format:</strong>
+  <code>[{"part":"A0004208503","supplier":"VALEO","price_eur":29.15}, ...]</code></p>
+</div>
+
+<hr>
+
+<div class="note">
+  <strong>Workflow summary:</strong><br>
+  Copy OE numbers → open avkparts.lt bulk modal → click <em>Fill Search</em> → wait for results → click <em>Get Prices</em> → JSON in clipboard.
+</div>
+
+</body>
+</html>

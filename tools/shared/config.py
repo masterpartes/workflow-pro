@@ -2,7 +2,7 @@
 Shared config for all Masterpartes tools.
 Loads from .env file next to this repo root — never hardcode credentials.
 """
-import os, sys
+import os, re, sys
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -12,6 +12,7 @@ TOOLS_DIR  = REPO_ROOT / "tools"
 AGENT_DIR  = REPO_ROOT / "agent"
 EXCEL_FILE = REPO_ROOT / "cotizacion_bulk.xlsm"
 AVK_LIST_FILE = REPO_ROOT / "avk_parts_list.txt"
+PARTSOUQ_LIST_FILE = REPO_ROOT / "partsouq_parts_list.txt"
 
 # Add agent/ to path so we can reuse ebay_service, oem_service
 sys.path.insert(0, str(AGENT_DIR))
@@ -49,3 +50,63 @@ EUROPEAN_WMIS = {
 
 def is_european_vin(vin: str) -> bool:
     return bool(vin) and vin[:3].upper() in EUROPEAN_WMIS
+
+
+# European vehicle-manufacturer names, as they show up in Inpart's "armadora"
+# field (free text). Matched after stripping everything but letters, so
+# "Mercedes-Benz" / "MERCEDES BENZ" / "mercedesbenz" all match the same way.
+EUROPEAN_BRAND_NAMES = {
+    "VW", "VOLKSWAGEN", "AUDI", "BMW", "MINI",
+    "MERCEDES", "MERCEDESBENZ",
+    "VOLVO", "JAGUAR", "LANDROVER", "LAND ROVER",
+    "PORSCHE", "RENAULT", "CITROEN", "CITROËN", "PEUGEOT", "DS",
+    "ALFAROMEO", "ALFA ROMEO", "FIAT", "FERRARI", "MASERATI", "MCLAREN",
+    "SEAT", "SKODA", "OPEL", "SMART",
+}
+
+
+def _norm_brand(text: str) -> str:
+    return re.sub(r"[^A-Z]", "", (text or "").upper())
+
+
+_EUROPEAN_BRAND_NAMES_NORM = {_norm_brand(b) for b in EUROPEAN_BRAND_NAMES}
+
+
+# Brands that have dedicated US OEM parts sites.  For these, the US site is
+# always tried first regardless of VIN origin — "if the VIN is not recognised
+# on the corresponding USA OEM site then it is a European vehicle."
+# Without a VIN we can't confirm European assembly, so we default to trying
+# the US site (it will simply return not-found for truly European-market parts).
+_BRANDS_WITH_US_SITES_NORM = {_norm_brand(b) for b in {
+    "MERCEDES", "MERCEDES BENZ",
+    "BMW", "MINI",
+    "AUDI",
+    "VW", "VOLKSWAGEN",
+    "VOLVO",
+    "JAGUAR",
+    "LAND ROVER", "LANDROVER",
+    "PORSCHE",
+}}
+
+
+def is_european(vin: str = "", armadora: str = "") -> bool:
+    """
+    Decide whether a quote is for a European-brand vehicle -- i.e. whether
+    it should route to AVK (European bulk parts search) instead of the
+    US-market OEM scrapers / PartSouq.
+
+    For brands that have US OEM parts sites (Mercedes, BMW, Audi, VW, Volvo,
+    Jaguar, Land Rover, Porsche), the US site is always tried first:
+      - VIN present  → WMI decides: US-assembled → False, European-built → True
+      - VIN absent   → default False (try US site; returns not-found if European)
+
+    For all other brands, armadora name is authoritative when present; VIN WMI
+    is a fallback for quotes where armadora wasn't captured.
+    """
+    norm = _norm_brand(armadora)
+    if norm:
+        if norm in _BRANDS_WITH_US_SITES_NORM:
+            # Has a US site → only route to AVK when VIN confirms European plant
+            return is_european_vin(vin) if vin else False
+        return norm in _EUROPEAN_BRAND_NAMES_NORM
+    return is_european_vin(vin)

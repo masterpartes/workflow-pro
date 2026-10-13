@@ -287,7 +287,7 @@ export default function PriceCalculator({ selectedProduct, products, onProductSe
 
   // ── Calculations ──────────────────────────────────────────────────────────
   const insurance = 0.01 * fob;
-  const freight = 1.57 * peso;
+  const freight = 4 * peso; // $4/kg
   const cif = fob + insurance + freight;
   const advalorem = cif * (arancelCalculo / 100);
   const fondinfa = 0.005 * cif;

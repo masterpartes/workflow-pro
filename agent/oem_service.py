@@ -56,6 +56,8 @@ WMI_TO_BRAND: dict[str, str] = {
     # Mercedes-Benz passenger cars (European-built)
     "WDB":"mercedes","WDD":"mercedes","WDC":"mercedes",
     "WDF":"mercedes","WMX":"mercedes","WME":"mercedes",
+    # Mercedes-Benz US-assembled (Tuscaloosa, Alabama plant)
+    "W1K":"mercedes","W1N":"mercedes","4JG":"mercedes",
 }
 
 OEM_URLS: dict[str, str] = {
@@ -86,11 +88,16 @@ _PARTS_SITES: dict[str, tuple[str, str]] = {
     "toyota":     ("https://www.toyotapartsdeal.com",      "toyota"),
     "vw":         ("https://www.vwpartsgiant.com",         "vw"),
     "volvo":      ("https://www.volvopartsgiant.com",      "volvo"),
-    # mbpartsgiant.com uses /genuine/mercedes-benz~part~{pn} — slug auto-resolved by site
-    "mercedes":   ("https://www.mbpartsgiant.com",         "mercedes-benz"),
+    # Mercedes removed: mbpartsgiant.com requires a session-based vehicle selection that
+    # can't be replicated with a stateless httpx request. Mercedes routes to PartSouq + eBay
+    # via the unknown-brand fallback path, same as other non-US-market vehicles.
 }
 
 VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.I)
+
+# Fallback VIN for mbpartsgiant.com when the quote's actual VIN is not in their database.
+# This VIN is a known-good 2021 Mercedes-Benz GLC43 AMG that the site recognises.
+FALLBACK_MB_VIN = "W1N0J6EB7MF903140"
 # Grupo Pieza codes (internal Audatex IDs): pure numeric, 15+ digits, e.g. 260716184637624.
 # MB OEM part numbers with color suffixes (e.g. 960 885 5025 9135 → 14 digits) are NOT internal.
 _INTERNAL_CODE_RE = re.compile(r"^\d{15,}$")
@@ -164,6 +171,36 @@ def brand_from_vin(vin: str) -> Optional[str]:
     return None
 
 
+# Free-text vehicle-manufacturer name variants -> our internal brand keys.
+# Keyed by the alias with spaces/punctuation stripped and lowercased.
+_BRAND_ALIASES: dict[str, str] = {
+    "chevrolet": "gm", "gmc": "gm", "buick": "gm", "cadillac": "gm",
+    "volkswagen": "vw",
+    "mercedesbenz": "mercedes", "mb": "mercedes", "mercedesbez": "mercedes",
+    "dodge": "mopar", "chrysler": "mopar", "jeep": "mopar", "ram": "mopar",
+}
+
+
+def brand_from_text(text: Optional[str]) -> Optional[str]:
+    """
+    Normalize a free-text vehicle-manufacturer string (e.g. Inpart's
+    "armadora" field, captured directly off the quote) into one of our
+    known brand keys.
+
+    Preferred over VIN-based detection when available: the quote states
+    the manufacturer directly, whereas VIN WMI-prefix mapping can be
+    wrong or missing for non-US-market / regional-assembly VINs.
+    """
+    if not text:
+        return None
+    key = re.sub(r"[^a-z]", "", text.strip().lower())
+    if not key:
+        return None
+    if key in _PARTS_SITES or key in OEM_URLS:
+        return key
+    return _BRAND_ALIASES.get(key)
+
+
 def base_url_from_vin(vin: str) -> Optional[str]:
     brand = brand_from_vin(vin)
     if not brand:
@@ -198,6 +235,8 @@ async def _fetch_parts_site(
     pn_clean = re.sub(r"[-\s]", "", part_number).upper()
     # mbpartsgiant.com uses a different URL pattern: /genuine/{prefix}~part~{pn}
     # The slug segment is ignored — the site resolves by part number and redirects.
+    # Mercedes part numbers from Inpart omit the leading "A" (e.g. "205 620 01 98").
+    # mbpartsgiant.com requires it (e.g. "A2056200198"), so we add it if missing.
     if url_prefix == "mercedes-benz":
         url = f"{base_url}/genuine/mercedes-benz~part~{pn_clean}"
     else:
@@ -394,12 +433,210 @@ async def _fetch_partsouq(
     return result
 
 
+async def _lookup_mercedes_playwright(
+    parts: list,
+    vin: str,
+    headless: bool = True,
+) -> list[dict]:
+    """
+    Look up Mercedes-Benz parts on mbpartsgiant.com via Playwright.
+
+    Uses direct keyword search — no VIN widget interaction required.
+    Confirmed: searching with empty vin/make/model/year params returns prices
+    for any matching part number, regardless of vehicle context.  This is
+    simpler, faster, and works with both US-assembled and European-built VINs.
+
+    Parts not found on mbpartsgiant.com fall back to PartSouq automatically.
+    """
+    part_list = [
+        (
+            p.get("parte", "") if isinstance(p, dict) else str(p),
+            p.get("descripcion", "") if isinstance(p, dict) else "",
+        )
+        for p in parts
+    ]
+
+    real: list[tuple] = []
+    pre_results: list[dict] = []
+    for pn, desc in part_list:
+        if is_internal_audatex_code(pn):
+            pre_results.append({
+                "parte": pn, "descripcion": desc,
+                "msrp": None, "price": None, "vin_fits": "N/A", "url": "",
+                "error": "internal_audatex_code",
+                "note": "Internal Inpart code, not an OEM part number. Look up manually.",
+                "ebay": None,
+            })
+            print(f"  [skip] {pn} -- internal Audatex code")
+        else:
+            real.append((pn, desc))
+
+    if not real:
+        return pre_results
+
+    print(
+        f"[oem/mercedes] Looking up {len(real)} part(s) on mbpartsgiant.com "
+        f"+ eBay concurrently (VIN: {vin or '—'})"
+    )
+
+    # Fire eBay lookups in the background while Playwright runs.
+    ebay_tasks = [
+        asyncio.create_task(ebay_search_part(pn, desc, brand="mercedes"))
+        for pn, desc in real
+    ]
+
+    oem_results: list[dict] = []
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+            timezone_id="America/New_York",
+        )
+        page = await ctx.new_page()
+        if STEALTH:
+            await stealth_async(page)
+
+        # Load the homepage once — primes any session state the site needs.
+        print("[MB] Loading mbpartsgiant.com …")
+        try:
+            await page.goto(
+                "https://www.mbpartsgiant.com/",
+                wait_until="networkidle",
+                timeout=30_000,
+            )
+        except Exception:
+            pass  # networkidle can time out on slow pages; continue anyway
+
+        # Search each part by keyword only — vehicle params left empty so the
+        # site returns the part regardless of vehicle-compatibility filtering.
+        for idx, (pn, desc) in enumerate(real, 1):
+            pn_clean = re.sub(r"[-\s]", "", pn).upper()
+            search_url = (
+                f"https://www.mbpartsgiant.com/page_product/searchbyname"
+                f"?vin=&make=&model=&year=&keywords={pn_clean}"
+            )
+            print(f"  [{idx}/{len(real)}] {pn_clean}")
+
+            r: dict = {
+                "parte": pn, "descripcion": desc,
+                "msrp": None, "price": None,
+                "vin_fits": "N/A", "url": search_url,
+                "error": None, "note": None,
+            }
+
+            try:
+                try:
+                    await page.goto(search_url, wait_until="networkidle", timeout=20_000)
+                except Exception:
+                    pass
+
+                r["url"] = page.url
+                body = await page.locator("body").inner_text(timeout=5_000)
+
+                if "No results were found" in body:
+                    r["error"] = "not_found"
+                    print(f"    -> not found on mbpartsgiant.com")
+                else:
+                    # Sale price
+                    try:
+                        txt = await page.locator(".price-section-price").first.inner_text(timeout=3_000)
+                        m = re.search(r"[\d,]+\.?\d{0,2}", txt.replace(",", ""))
+                        if m:
+                            r["price"] = float(m.group())
+                    except Exception:
+                        pass
+
+                    # MSRP
+                    try:
+                        txt = await page.locator(".price-section-retail").first.inner_text(timeout=3_000)
+                        m = re.search(r"[\d,]+\.?\d{0,2}", txt.replace(",", ""))
+                        if m:
+                            r["msrp"] = float(m.group())
+                    except Exception:
+                        pass
+
+                    if r["price"] is not None:
+                        print(f"    -> price=${r['price']}  MSRP=${r['msrp']}")
+                    else:
+                        r["error"] = "no_price"
+                        print(f"    -> page found but no price extracted")
+
+            except Exception as exc:
+                r["error"] = str(exc)
+                print(f"    -> error: {exc}")
+
+            oem_results.append(r)
+            await asyncio.sleep(0.5)
+
+        await browser.close()
+
+    # PartSouq fallback for parts not found on mbpartsgiant.com
+    fallback_idx = [i for i, r in enumerate(oem_results) if r.get("price") is None]
+    psq_by_idx: dict[int, dict] = {}
+    if fallback_idx:
+        print(f"[MB] {len(fallback_idx)} part(s) not on mbpartsgiant.com — trying PartSouq")
+        async with httpx.AsyncClient(headers=_PSQ_HEADERS, http2=True) as psq_client:
+            psq_tasks_mb = [
+                _fetch_partsouq(psq_client, real[i][0], "mercedes")
+                for i in fallback_idx
+            ]
+            psq_results_mb = await asyncio.gather(*psq_tasks_mb)
+        psq_by_idx = dict(zip(fallback_idx, psq_results_mb))
+
+    ebay_results = await asyncio.gather(*ebay_tasks)
+
+    final = list(pre_results)
+    for i, ((pn, desc), r, ebay) in enumerate(zip(real, oem_results, ebay_results)):
+        psq = psq_by_idx.get(i)
+        if psq is not None:
+            if psq.get("price") is not None:
+                r["price"] = psq["price"]
+                r["url"]   = psq["url"]
+                r["error"] = None
+                r["note"]  = (
+                    "Not on mbpartsgiant.com; price from PartSouq"
+                    + (f" (Make: {psq['make']})" if psq.get("make") else "")
+                    + "."
+                )
+            else:
+                r["note"] = (
+                    f"Not found on mbpartsgiant.com or PartSouq "
+                    f"({psq.get('error') or 'no match'})."
+                )
+        r["ebay"] = ebay
+        msrp_s  = f"${r['msrp']}"  if r["msrp"]  else "-"
+        price_s = f"${r['price']}" if r["price"] else "-"
+        print(f"  -> {pn}: {r['error'] or f'MSRP:{msrp_s}  Price:{price_s}'}")
+        final.append(r)
+
+    return final
+
+
 async def _lookup_parts_via_httpx(
     parts: list, vin: Optional[str], brand: str
 ) -> list[dict]:
     """
     Lookup for brands in _PARTS_SITES: httpx fetch + eBay concurrently.
     No Playwright needed.
+
+    Any part the primary parts-site scraper doesn't find (e.g. a LatAm/Asia-
+    market vehicle whose parts aren't carried by the US-market site — a
+    Mitsubishi L200 sold in Ecuador, for instance) falls back to a PartSouq
+    lookup for that part, same as the unknown-brand path already does.
     """
     base_url, url_prefix = _PARTS_SITES[brand]
 
@@ -448,21 +685,56 @@ async def _lookup_parts_via_httpx(
             asyncio.gather(*ebay_tasks),
         )
 
+    # PartSouq fallback for anything the primary site didn't have.
+    fallback_idx = [i for i, site in enumerate(site_results) if site.get("price") is None]
+    psq_by_idx: dict[int, dict] = {}
+    if fallback_idx:
+        print(f"[oem/{brand}] {len(fallback_idx)} part(s) not on {base_url} — trying PartSouq")
+        async with httpx.AsyncClient(headers=_PSQ_HEADERS, http2=True) as psq_client:
+            psq_tasks = [_fetch_partsouq(psq_client, real[i][0], brand) for i in fallback_idx]
+            psq_results = await asyncio.gather(*psq_tasks)
+        psq_by_idx = dict(zip(fallback_idx, psq_results))
+
+    site_host = base_url.split("//", 1)[-1]
     results = list(pre_results)
-    for (pn, desc), site, ebay in zip(real, site_results, ebay_results):
-        msrp_s  = f"${site['msrp']}"  if site["msrp"]  else "-"
-        price_s = f"${site['price']}" if site["price"] else "-"
-        status  = site["error"] or f"MSRP:{msrp_s}  Price:{price_s}"
+    for i, ((pn, desc), site, ebay) in enumerate(zip(real, site_results, ebay_results)):
+        msrp  = site["msrp"]
+        price = site["price"]
+        url   = site["url"]
+        error = site["error"]
+        note  = None
+
+        psq = psq_by_idx.get(i)
+        if psq is not None:
+            if psq.get("price") is not None:
+                price = psq["price"]
+                url   = psq["url"]
+                error = None
+                note = (
+                    f"Not found on {site_host}; price from PartSouq"
+                    + (f" (Make: {psq['make']})" if psq.get("make") else "")
+                    + ". Likely a non-US-market part (LatAm/Asia spec)."
+                )
+            else:
+                note = (
+                    f"Not found on {site_host} or PartSouq "
+                    f"({psq.get('error') or 'no match'}). "
+                    "Likely not sold in this market — look up manually."
+                )
+
+        msrp_s  = f"${msrp}"  if msrp  else "-"
+        price_s = f"${price}" if price else "-"
+        status  = error or f"MSRP:{msrp_s}  Price:{price_s}"
         print(f"  -> {pn}: {status}")
         results.append({
             "parte":            pn,
             "descripcion":      desc,
-            "msrp":             site["msrp"],
-            "price":            site["price"],
+            "msrp":             msrp,
+            "price":            price,
             "vin_fits":         "N/A",
-            "url":              site["url"],
-            "error":            site["error"],
-            "note":             None,
+            "url":              url,
+            "error":            error,
+            "note":             note,
             "ebay":             ebay,
         })
 
@@ -641,6 +913,10 @@ async def lookup_parts(
     effective_brand = brand or brand_from_vin(vin or "")
     base_url = OEM_URLS.get(effective_brand) if effective_brand else None
 
+    # Mercedes: Playwright on mbpartsgiant.com (requires a VIN-based vehicle session)
+    if effective_brand == "mercedes":
+        return await _lookup_mercedes_playwright(parts, vin or "", headless)
+
     # Brands with dedicated httpx scrapers (fast, no Playwright)
     if effective_brand in _PARTS_SITES:
         return await _lookup_parts_via_httpx(parts, vin, effective_brand)
@@ -815,3 +1091,61 @@ async def lookup_parts(
         })
 
     return results
+
+
+async def lookup_partsouq_only(
+    parts: list,
+    brand: Optional[str] = None,
+    incluir_ebay: bool = False,
+) -> list[dict]:
+    """
+    PartSouq forzado: se salta el ruteo por VIN.
+
+    Existe porque el dueno a veces YA SABE que la parte esta en PartSouq y no
+    en el sitio OEM de EE.UU. que le tocaria por marca; en ese caso el ruteo
+    automatico solo gasta tiempo en una consulta que va a fallar.
+
+    eBay solo entra si se lo pide: con fuente forzada, el precio alterno se
+    consulta cuando hace falta, no siempre.
+    """
+    part_list = [
+        (
+            p.get("parte", "") if isinstance(p, dict) else str(p),
+            p.get("descripcion", "") if isinstance(p, dict) else "",
+        )
+        for p in parts
+    ]
+    print(f"     -> PartSouq forzado para {len(part_list)} partes"
+          + (" (+ eBay)" if incluir_ebay else ""))
+
+    async with httpx.AsyncClient(headers=_PSQ_HEADERS, http2=True) as client:
+        psq_task = asyncio.gather(
+            *[_fetch_partsouq(client, pn, brand) for pn, _ in part_list]
+        )
+        if incluir_ebay:
+            ebay_task = asyncio.gather(
+                *[ebay_search_part(pn, desc, brand=brand or "") for pn, desc in part_list]
+            )
+            psq_results, ebay_results = await asyncio.gather(psq_task, ebay_task)
+        else:
+            psq_results = await psq_task
+            ebay_results = [None] * len(part_list)
+
+    salida = []
+    for i, (pn, desc) in enumerate(part_list):
+        psq = psq_results[i]
+        salida.append({
+            "parte":       pn,
+            "descripcion": desc,
+            "msrp":        None,
+            "price":       psq["price"],
+            "vin_fits":    "N/A",
+            "url":         psq["url"],
+            "error":       psq["error"],
+            "fuente":      "PartSouq",
+            "note":        ("Precio OEM de PartSouq"
+                            + (f" (marca: {psq['make']})" if psq.get("make") else "")
+                            + "." if psq["price"] else "PartSouq no tiene esta parte."),
+            "ebay":        ebay_results[i],
+        })
+    return salida
