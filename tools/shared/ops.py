@@ -82,6 +82,13 @@ async def update(c: httpx.AsyncClient, table: str, row_id: str, changes: dict) -
     return r.json()[0]
 
 
+async def delete(c: httpx.AsyncClient, table: str, row_id: str) -> None:
+    r = await c.delete(f"{SUPABASE_URL}/rest/v1/{table}", params={"id": f"eq.{row_id}"},
+                       headers=_h())
+    if r.status_code not in (200, 204):
+        raise OpsError(f"borrar {table} {row_id}: HTTP {r.status_code} {r.text[:200]}")
+
+
 async def log(c: httpx.AsyncClient, usuario: str, tool: str, tabla: str,
               fila_id: str, antes: Optional[dict], despues: Optional[dict]) -> None:
     await insert(c, "bot_log", {"usuario": usuario, "tool": tool, "tabla": tabla,

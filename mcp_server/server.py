@@ -29,6 +29,7 @@ except ImportError:
 sys.path.insert(0, str(_AGENT))
 sys.path.insert(0, str(_TOOLS))
 
+from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("Masterpartes")
@@ -690,7 +691,7 @@ async def undo_last(usuario: str, confirmar: bool = False) -> dict:
     Un gasto deshecho queda 'anulado' (no se borra).
     """
     import httpx
-    from shared.ops import select, update, usuario_valido, OpsError
+    from shared.ops import select, update, delete, usuario_valido, OpsError
     try:
         u = usuario_valido(usuario)
         async with httpx.AsyncClient(timeout=30) as c:
@@ -704,13 +705,299 @@ async def undo_last(usuario: str, confirmar: bool = False) -> dict:
             texto = f"Deshacer {last[0]['tool']} ({len(filas)} fila(s)) del {last[0]['created_date'][:16]}"
             if not confirmar:
                 return {"ok": True, "vista_previa": True, "texto": texto + "\n¿Sí?"}
+            filas = sorted(filas, key=lambda r: r["tabla"] == "Order")
             for r in filas:
                 if r["tabla"] == "Gasto":
                     await update(c, "Gasto", r["fila_id"], {"estado": "anulado"})
+                elif r["antes"] is None and r["tabla"] in ("Order", "OrderItem"):
+                    await delete(c, r["tabla"], r["fila_id"])
                 elif r["antes"]:
                     await update(c, r["tabla"], r["fila_id"], r["antes"])
                 await update(c, "bot_log", r["id"], {"deshecho": True})
         return {"ok": True, "escrito": True, "texto": "✓ " + texto}
+    except OpsError as e:
+        return {"ok": False, "error": str(e)}
+
+# ── Cotizar una lista completa en una llamada ──────────────────────────────────
+
+async def _tier_cliente(cliente: str) -> Optional[dict]:
+    """Busca el cliente en la tabla Client: nombre contenido en el texto dado."""
+    import httpx
+    from shared.ops import select
+    txt = (cliente or "").upper()
+    if not txt:
+        return None
+    async with httpx.AsyncClient(timeout=15) as c:
+        rows = await select(c, "Client", {"select": "nombre,tier,margen_min,margen_sugerido"})
+    hits = [r for r in rows if r["nombre"] and r["nombre"].upper() in txt]
+    hits.sort(key=lambda r: -len(r["nombre"]))  # el nombre más largo gana
+    return hits[0] if hits else None
+
+
+@mcp.tool()
+async def quote_list(parts: list[dict], cliente: str, vin: str = "", brand: str = "",
+                     source: str = "auto", precio: str = "auto",
+                     margin_pct: float = -1, freight_origin_eur: float = 0.0) -> dict:
+    """
+    COTIZAR UNA LISTA COMPLETA EN UNA SOLA LLAMADA. Usar SIEMPRE para cotizar
+    (1 o más partes) en vez de quote_parts + quote_quito_cost por separado.
+
+    Busca precio (OEM/eBay/PartSouq/AVK), resuelve arancel y peso, calcula el
+    costo landed, aplica el margen sugerido del tier del cliente (tabla Client)
+    y devuelve la TABLA INTERNA YA ARMADA (`tabla`): mandala tal cual, en
+    MarkdownV2, sin tocarla.
+
+    Args:
+        parts:  [{"parte": "8L8Z78101A88A", "descripcion": "moldura caucho tunel RH",
+                  "cantidad": 1, "peso_kg": opcional, "tariff_pct": opcional}]
+                La descripcion importa: con ella se resuelven arancel y peso.
+                peso_kg / tariff_pct SOLO si el usuario los dio.
+        cliente: como lo escribió el usuario ("ORGU FORD", "Seguros Zurich").
+        vin, brand: identifican la marca/sitio OEM. brand si no hay VIN.
+        source: "auto" | "partsouq" | "auvika" (si el mensaje lo pide).
+        precio: qué precio cotizar: "auto" (OEM; si no hay, eBay genuino),
+                "oem", "ebay" (eBay genuino; para alternos: "alterno").
+        margin_pct: solo si el dueño lo forzó (m=XX). -1 = sugerido del tier.
+        freight_origin_eur: flete Vilnius->Miami (solo AVK). Si falta, esas
+                partes quedan "falta flete EU" y hay que pedirlo.
+
+    Devuelve: ref (para "vendido 1,3"), tabla, filas (detalle por parte),
+    sin_cotizar, avisos, cliente_nuevo.
+    """
+    from shared.cotizacion import nueva_ref, guardar, tabla, fuente_corta, palabra
+    tier = await _tier_cliente(cliente)
+    cliente_nuevo = tier is None
+    m = margin_pct if margin_pct >= 0 else (float(tier["margen_sugerido"]) if tier else None)
+    mmin = float(tier["margen_min"]) if tier else None
+
+    q = await quote_parts([{"parte": p.get("parte", ""), "descripcion": p.get("descripcion", "")}
+                           for p in parts], vin=vin, brand=brand, source=source,
+                          incluir_alterno=(precio in ("ebay", "alterno")))
+    if not q.get("ok"):
+        return {"ok": False, "error": q.get("error", "fallo la busqueda de precios"), **q}
+    por_parte = {r["parte"]: r for r in q["parts"]}
+
+    filas, sin, avisos_peso, avisos_ar, avisos = [], [], [], [], []
+    fuentes = set()
+    for i, p in enumerate(parts):
+        pn = p.get("parte", "")
+        desc = p.get("descripcion", "") or ""
+        corta = palabra(desc)
+        r = por_parte.get(pn, {})
+        eb = r.get("ebay") or {}
+        oem = r.get("price")
+        currency = r.get("currency") or "USD"
+        gen = (eb.get("genuine") or {}).get("total_min")
+        alt = (eb.get("aftermarket") or {}).get("total_min")
+
+        if precio == "ebay":
+            fob, src = gen, "eBay genuino"
+        elif precio == "alterno":
+            fob, src = alt, "eBay alterno"
+        elif precio == "oem":
+            fob, src = oem, fuente_corta(r.get("url"), r.get("fuente", "OEM"))
+        else:
+            if oem:
+                fob, src = oem, fuente_corta(r.get("url"), r.get("fuente", "OEM"))
+            else:
+                fob, src = gen, "eBay genuino"
+        if oem and gen and gen < 0.4 * oem:
+            avisos.append(f"{corta}: eBay genuino ${gen:,.0f} muy bajo vs OEM, no usar sin revisar")
+        if not fob:
+            sin.append({"parte": pn, "corta": corta, "motivo": "sin precio"})
+            continue
+        if currency == "EUR" and not freight_origin_eur:
+            sin.append({"parte": pn, "corta": corta, "motivo": "falta flete EU"})
+            continue
+        fuentes.add(src)
+
+        kw = dict(part_price=float(fob), descripcion=desc, currency=currency,
+                  margin_pct=m or 0, freight_origin=freight_origin_eur if currency == "EUR" else 0.0)
+        peso = p.get("peso_kg") or r.get("peso_kg")
+        if peso:
+            kw["weight_kg"] = float(peso)
+        if p.get("tariff_pct") is not None:
+            kw["tariff_pct"] = float(p["tariff_pct"])
+        c = await quote_quito_cost(**kw)
+        if not c.get("ok") and c.get("escalar") and c.get("candidatos"):
+            tasas = {cand.get("arancel") for cand in c["candidatos"]}
+            if len(tasas) == 1 and None not in tasas:
+                # todos los candidatos pagan lo mismo: la subpartida no mueve el precio
+                kw["tariff_pct"] = float(tasas.pop())
+                c = await quote_quito_cost(**kw)
+                if c.get("ok"):
+                    c["revisar_arancel"] = True
+            else:
+                sin.append({"parte": pn, "corta": corta, "motivo": "elegir arancel",
+                            "candidatos": c["candidatos"]})
+                continue
+        if not c.get("ok"):
+            motivo = "falta peso" if "peso" in (c.get("error") or "").lower() else "error"
+            sin.append({"parte": pn, "corta": corta, "motivo": motivo, "error": c.get("error")})
+            continue
+        if c.get("revisar_peso"):
+            avisos_peso.append(corta)
+        if c.get("revisar_arancel"):
+            avisos_ar.append(corta)
+        b = c["breakdown"]
+        filas.append({
+            "n": len(filas) + 1, "parte": pn, "descripcion": desc, "corta": corta,
+            "cantidad": p.get("cantidad") or 1, "fuente": src, "url": r.get("url"),
+            "currency": currency, "precio_proveedor": float(fob),
+            "fob": b["fob_usd"], "costo": c["landed_cost_usd"],
+            "precio": c.get("precio_sugerido_usd") if m is not None else None,
+            "msrp": r.get("msrp"),
+            "peso_kg": c["inputs"]["weight_kg"], "peso_origen": c["peso"].get("origen"),
+            "arancel_pct": c["inputs"]["tariff_pct"],
+            "subpartida": (c.get("arancel") or {}).get("subpartida"),
+            "est": {
+                "fob_usd": b["fob_usd"],
+                "flete_origen_usd": b["freight_origin_usd"],
+                "courier_usd": b["total_siati_usd"],
+                "tributos_usd": b["total_aduana_usd"],
+                "isd_usd": b["isd_usd"],
+                "landed_usd": c["landed_cost_usd"],
+            },
+            "desglose": c.get("texto"),
+        })
+
+    if avisos_peso:
+        avisos.insert(0, "verificar peso: " + ("todas" if len(avisos_peso) == len(filas) else ", ".join(avisos_peso)))
+    if avisos_ar:
+        avisos.insert(1 if avisos_peso else 0, "verificar arancel: " + ", ".join(avisos_ar))
+    if cliente_nuevo:
+        avisos.insert(0, "cliente nuevo: sin tier, visto bueno del dueño")
+
+    nombre = (cliente or "?").upper()
+    enc = f"{nombre} ({tier['tier'] if tier else '?'}) · {' / '.join(sorted(fuentes)) or '—'}"
+    ref = nueva_ref()
+    txt = tabla(enc, filas, sin, avisos, pie=f"{ref} · OK / m=XX / precios / no")
+    data = {"ref": ref, "creado": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+            "cliente": cliente, "cliente_tabla": tier["nombre"] if tier else None,
+            "tier": tier["tier"] if tier else None, "margen_pct": m, "margen_min": mmin,
+            "vin": vin, "brand": brand, "source": source, "precio": precio,
+            "filas": filas, "sin_cotizar": sin, "avisos": avisos}
+    guardar(ref, data)
+    return {"ok": True, "ref": ref, "tabla": txt, "cliente_nuevo": cliente_nuevo,
+            "tier": data["tier"], "margen_pct": m, "margen_min": mmin,
+            "filas": [{k: f[k] for k in ("n", "parte", "descripcion", "cantidad", "fuente",
+                                         "fob", "costo", "precio", "msrp", "peso_kg",
+                                         "arancel_pct", "url")} for f in filas],
+            "sin_cotizar": sin, "avisos": avisos,
+            "nota": "Manda `tabla` tal cual (MarkdownV2). `desglose <parte>`: quote_detail(ref, parte)."}
+
+
+@mcp.tool()
+async def quote_detail(ref: str, parte: str = "") -> dict:
+    """READ-ONLY. Desglose completo de una parte (o de todas) de una cotización
+    hecha con quote_list. Para 'desglose <parte>' / 'detalle'."""
+    from shared.cotizacion import cargar
+    d = cargar(ref)
+    if not d:
+        return {"ok": False, "error": f"no existe la cotizacion {ref}"}
+    fs = [f for f in d["filas"] if not parte or f["parte"].upper() == parte.upper()
+          or str(f["n"]) == parte.strip()]
+    return {"ok": True, "ref": d["ref"], "cliente": d["cliente"], "tier": d["tier"],
+            "partes": [{"n": f["n"], "parte": f["parte"], "fuente": f["fuente"],
+                        "url": f["url"], "desglose": f["desglose"]} for f in fs]}
+
+
+# ── Cotización vendida → pedido ────────────────────────────────────────────────
+
+@mcp.tool()
+async def create_order(ref: str, filas: list[int], usuario: str,
+                       nombre_pedido: str = "", notas: str = "", placa: str = "",
+                       precios: list[float] | None = None, fecha_entrega: str = "",
+                       confirmar: bool = False) -> dict:
+    """
+    Crear el PEDIDO en workflow-pro a partir de una cotización de quote_list
+    ("vendido 1, 3"). Solo Alejandro.
+
+    Args:
+        ref:      la referencia de la cotización (ej. C1013-7F3A).
+        filas:    números de fila vendidos, de la tabla (# 1, 2, 3...).
+        usuario:  "Alejandro".
+        nombre_pedido: nombre descriptivo, convención del dashboard:
+                  "<MARCA MODELO> <TALLER/DETALLE>" ej. "FORD ESCAPE ORGU GUAYAQUIL".
+                  Si falta, preguntá.
+        notas:    números del cliente: "PEDIDO 2179 SOLICITUD 567975 PLACA GTK3480".
+        placa:    placa del vehículo si se conoce.
+        precios:  precio de venta UNITARIO final por fila vendida, en el mismo
+                  orden que `filas`, si el dueño pasó sus propios precios.
+                  Si no, se usa el sugerido de la cotización.
+        fecha_entrega: AAAA-MM-DD prometida; por defecto hoy + 20 días.
+        confirmar: False = vista previa; True = escribir, solo tras "si".
+    """
+    import httpx, uuid as _u, datetime as dt
+    from shared.cotizacion import cargar
+    from shared.ops import insert, log, usuario_valido, hoy_quito, OpsError
+    try:
+        u = usuario_valido(usuario)
+        if u != "Alejandro":
+            raise OpsError("crear pedidos lo hace solo el dueño")
+        d = cargar(ref)
+        if not d:
+            raise OpsError(f"no existe la cotizacion {ref}")
+        por_n = {f["n"]: f for f in d["filas"]}
+        malas = [n for n in filas if n not in por_n]
+        if malas or not filas:
+            raise OpsError(f"filas inexistentes en {ref}: {malas or 'ninguna'}")
+        if precios and len(precios) != len(filas):
+            raise OpsError(f"{len(filas)} filas pero {len(precios)} precios: no cierra")
+        if not nombre_pedido.strip():
+            raise OpsError("falta nombre_pedido (ej. 'FORD ESCAPE ORGU GUAYAQUIL')")
+        hoy = hoy_quito()
+        f_ent = fecha_entrega or (dt.date.fromisoformat(hoy) + dt.timedelta(days=20)).isoformat()
+        sel = []
+        for k, n in enumerate(filas):
+            f = por_n[n]
+            pv = float(precios[k]) if precios else f.get("precio")
+            if pv is None:
+                raise OpsError(f"fila {n} sin precio de venta (cliente sin tier): pasá precios")
+            sel.append((f, round(pv, 2)))
+        avisos = []
+        mmin = d.get("margen_min")
+        for f, pv in sel:
+            if pv < f["costo"]:
+                avisos.append(f"{f['corta'] if 'corta' in f else f['parte']}: precio {pv:,.2f} < costo {f['costo']:,.2f}")
+            elif mmin is not None and pv < f["costo"] * (1 + mmin / 100):
+                avisos.append(f"{f['parte']}: debajo del margen mínimo {mmin:g}%")
+        total = sum(pv * (f.get("cantidad") or 1) for f, pv in sel)
+        cliente = (d.get("cliente_tabla") or d["cliente"] or "").upper()
+        texto = (f"Pedido {nombre_pedido.upper()} — {cliente}\n"
+                 + (f"{notas}\n" if notas else "")
+                 + f"Entrega prometida {f_ent}\n"
+                 + "\n".join(f"  {f['n']}. {f['descripcion'] or f['parte']} ({f['parte']}) "
+                             f"x{f.get('cantidad') or 1} · venta {pv:,.2f} · costo est. {f['costo']:,.2f}"
+                             for f, pv in sel)
+                 + f"\nTotal venta {total:,.2f}"
+                 + ("\n⚠ " + "\n⚠ ".join(avisos) if avisos else ""))
+        if not confirmar:
+            return {"ok": True, "vista_previa": True, "texto": texto + "\n¿Sí?"}
+
+        lote = _u.uuid4().hex
+        async with httpx.AsyncClient(timeout=30) as c:
+            o = await insert(c, "Order", {
+                "numero_pedido": nombre_pedido.upper().strip(), "cliente": cliente,
+                "fecha_pedido": hoy, "notas": notas or None, "placa": (placa or "").upper() or None,
+                "archivado": False, "created_by": f"bot:{u}"})
+            await log(c, u, "create_order", "Order", o["id"], None,
+                      {"numero_pedido": o["numero_pedido"], "ref": d["ref"], "_lote": lote})
+            for f, pv in sel:
+                e = f["est"]
+                it = await insert(c, "OrderItem", {
+                    "pedido_id": o["id"], "pedido_numero": o["numero_pedido"],
+                    "producto_nombre": f["descripcion"] or f["parte"], "numero_parte": f["parte"],
+                    "cantidad": f.get("cantidad") or 1, "fecha_entrega_orden": f_ent,
+                    "precio_venta": pv, "estado": "adjudicado", "peso_kg": f["peso_kg"],
+                    "est_fob_usd": e["fob_usd"], "est_flete_origen_usd": e["flete_origen_usd"],
+                    "est_courier_usd": e["courier_usd"], "est_tributos_usd": e["tributos_usd"],
+                    "est_isd_usd": e["isd_usd"], "est_landed_usd": e["landed_usd"],
+                    "created_by": f"bot:{u}"})
+                await log(c, u, "create_order", "OrderItem", it["id"], None,
+                          {"parte": f["parte"], "_lote": lote})
+        return {"ok": True, "escrito": True, "pedido_id": o["id"],
+                "texto": f"✓ Pedido {o['numero_pedido']} creado con {len(sel)} item(s). Ya está en el dashboard."}
     except OpsError as e:
         return {"ok": False, "error": str(e)}
 

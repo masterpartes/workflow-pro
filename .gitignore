@@ -19,3 +19,6 @@ __pycache__/
 Claude outputs/
 # datos del negocio, no código
 DESPACHO MASTERPARTES.xlsx
+
+# caché local de cotizaciones del bot
+data/
