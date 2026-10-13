@@ -94,6 +94,8 @@ def _dirs_permitidos() -> list[Path]:
     env = os.environ.get("BOT_ATTACH_DIRS", "")
     dirs = [Path(p) for p in env.split(";") if p.strip()]
     dirs.append(Path.home() / ".claude" / "channels" / "telegram")
+    # adjuntos que el dueño manda desde la app de Claude (se copian acá)
+    dirs.append(Path(__file__).resolve().parents[2] / "inbox")
     return [d.resolve() for d in dirs]
 
 
