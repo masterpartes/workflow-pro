@@ -734,8 +734,43 @@ async def _tier_cliente(cliente: str) -> Optional[dict]:
     return hits[0] if hits else None
 
 
+def _marca_por_numero(partes: list[str]) -> str:
+    """Ford: 4to caracter 'Z' (8L8Z-..., NL1Z-..., BL8Z...). Solo si TODAS coinciden."""
+    import re
+    limpias = [re.sub(r"[^A-Z0-9]", "", (x or "").upper()) for x in partes if x]
+    if limpias and all(re.match(r"^[A-Z0-9]{3}Z[A-Z0-9]{4,}", x) for x in limpias):
+        return "ford"
+    return ""
+
+
+_PESO_FALLBACK: Optional[float] = None
+
+
+def _peso_conservador() -> float:
+    """Percentil 75 de los pesos reales de despacho (tabla part_weight).
+    Se usa SOLO cuando no hay base para estimar, y se marca como supuesto."""
+    global _PESO_FALLBACK
+    if _PESO_FALLBACK is None:
+        from shared.part_weight import _fetch
+        pesos = sorted(float(r["peso_kg"]) for r in _fetch("part_weight", "peso_kg")
+                       if r.get("peso_kg"))
+        _PESO_FALLBACK = round(pesos[int(len(pesos) * 0.75)], 2) if pesos else 3.0
+    return _PESO_FALLBACK
+
+
+async def _tier_por_defecto() -> dict:
+    """Sin cliente: se cotiza con tier B (el más común) y se marca en el encabezado."""
+    import httpx
+    from shared.ops import select
+    async with httpx.AsyncClient(timeout=15) as c:
+        rows = await select(c, "Client", {"tier": "eq.B", "limit": "1",
+                                          "select": "tier,margen_min,margen_sugerido"})
+    r = rows[0] if rows else {"tier": "B", "margen_min": 15, "margen_sugerido": 35}
+    return {"nombre": None, **r}
+
+
 @mcp.tool()
-async def quote_list(parts: list[dict], cliente: str, vin: str = "", brand: str = "",
+async def quote_list(parts: list[dict], cliente: str = "", vin: str = "", brand: str = "",
                      source: str = "auto", precio: str = "auto",
                      margin_pct: float = -1, freight_origin_eur: float = 0.0) -> dict:
     """
@@ -753,6 +788,8 @@ async def quote_list(parts: list[dict], cliente: str, vin: str = "", brand: str 
                 La descripcion importa: con ella se resuelven arancel y peso.
                 peso_kg / tariff_pct SOLO si el usuario los dio.
         cliente: como lo escribió el usuario ("ORGU FORD", "Seguros Zurich").
+                 Si no vino, dejalo vacío: se cotiza con tier B y el encabezado
+                 lo dice. NUNCA preguntes antes de cotizar.
         vin, brand: identifican la marca/sitio OEM. brand si no hay VIN.
         source: "auto" | "partsouq" | "auvika" (si el mensaje lo pide).
         precio: qué precio cotizar: "auto" (OEM; si no hay, eBay genuino),
@@ -765,8 +802,11 @@ async def quote_list(parts: list[dict], cliente: str, vin: str = "", brand: str 
     sin_cotizar, avisos, cliente_nuevo.
     """
     from shared.cotizacion import nueva_ref, guardar, tabla, fuente_corta, palabra
-    tier = await _tier_cliente(cliente)
-    cliente_nuevo = tier is None
+    sin_cliente = not (cliente or "").strip()
+    tier = await _tier_cliente(cliente) if not sin_cliente else await _tier_por_defecto()
+    cliente_nuevo = (not sin_cliente) and tier is None
+    if not vin and not brand:
+        brand = _marca_por_numero([p.get("parte", "") for p in parts])
     m = margin_pct if margin_pct >= 0 else (float(tier["margen_sugerido"]) if tier else None)
     mmin = float(tier["margen_min"]) if tier else None
 
@@ -819,18 +859,30 @@ async def quote_list(parts: list[dict], cliente: str, vin: str = "", brand: str 
         if p.get("tariff_pct") is not None:
             kw["tariff_pct"] = float(p["tariff_pct"])
         c = await quote_quito_cost(**kw)
-        if not c.get("ok") and c.get("escalar") and c.get("candidatos"):
-            tasas = {cand.get("arancel") for cand in c["candidatos"]}
-            if len(tasas) == 1 and None not in tasas:
-                # todos los candidatos pagan lo mismo: la subpartida no mueve el precio
-                kw["tariff_pct"] = float(tasas.pop())
+        supuestos = []
+        for _ in range(2):   # a lo sumo: resolver arancel y después peso
+            if c.get("ok") or not c.get("escalar"):
+                break
+            if c.get("candidatos"):
+                tasas = [cand.get("arancel") for cand in c["candidatos"] if cand.get("arancel") is not None]
+                if not tasas:
+                    break
+                # Iguales: la subpartida no mueve el precio. Distintas: se usa la MÁS ALTA
+                # (costo conservador) y se marca para que el dueño la confirme.
+                kw["tariff_pct"] = float(max(tasas))
+                if len(set(tasas)) > 1:
+                    supuestos.append(f"arancel {max(tasas):g}% (máx de {len(set(tasas))})")
                 c = await quote_quito_cost(**kw)
                 if c.get("ok"):
                     c["revisar_arancel"] = True
+            elif "peso" in (c.get("error") or "").lower() and not kw.get("weight_kg"):
+                kw["weight_kg"] = _peso_conservador()
+                supuestos.append(f"peso {kw['weight_kg']:g} kg supuesto")
+                c = await quote_quito_cost(**kw)
             else:
-                sin.append({"parte": pn, "corta": corta, "motivo": "elegir arancel",
-                            "candidatos": c["candidatos"]})
-                continue
+                break
+        if supuestos and c.get("ok"):
+            avisos.append(f"{corta}: " + ", ".join(supuestos))
         if not c.get("ok"):
             motivo = "falta peso" if "peso" in (c.get("error") or "").lower() else "error"
             sin.append({"parte": pn, "corta": corta, "motivo": motivo, "error": c.get("error")})
@@ -868,7 +920,7 @@ async def quote_list(parts: list[dict], cliente: str, vin: str = "", brand: str 
     if cliente_nuevo:
         avisos.insert(0, "cliente nuevo: sin tier, visto bueno del dueño")
 
-    nombre = (cliente or "?").upper()
+    nombre = "SIN CLIENTE" if sin_cliente else (cliente or "?").upper()
     enc = f"{nombre} ({tier['tier'] if tier else '?'}) · {' / '.join(sorted(fuentes)) or '—'}"
     ref = nueva_ref()
     txt = tabla(enc, filas, sin, avisos, pie=f"{ref} · OK / m=XX / precios / no")
@@ -878,13 +930,10 @@ async def quote_list(parts: list[dict], cliente: str, vin: str = "", brand: str 
             "vin": vin, "brand": brand, "source": source, "precio": precio,
             "filas": filas, "sin_cotizar": sin, "avisos": avisos}
     guardar(ref, data)
-    return {"ok": True, "ref": ref, "tabla": txt, "cliente_nuevo": cliente_nuevo,
-            "tier": data["tier"], "margen_pct": m, "margen_min": mmin,
-            "filas": [{k: f[k] for k in ("n", "parte", "descripcion", "cantidad", "fuente",
-                                         "fob", "costo", "precio", "msrp", "peso_kg",
-                                         "arancel_pct", "url")} for f in filas],
-            "sin_cotizar": sin, "avisos": avisos,
-            "nota": "Manda `tabla` tal cual (MarkdownV2). `desglose <parte>`: quote_detail(ref, parte)."}
+    # Respuesta corta a propósito: todo lo que vuelve acá queda en el contexto del
+    # bot y se paga en cada mensaje siguiente. El detalle vive en la caché (quote_detail).
+    return {"ok": True, "ref": ref, "tabla": txt,
+            "nota": "Mandá `tabla` tal cual, en MarkdownV2, como ÚNICO mensaje. Nada más."}
 
 
 @mcp.tool()

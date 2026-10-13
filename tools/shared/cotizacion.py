@@ -66,13 +66,14 @@ def _n(x) -> str:
 def tabla(encabezado: str, filas: list[dict], sin_cotizar: list[dict],
           avisos: list[str], pie: str = "OK / m=XX / precios / no") -> str:
     """Filas: {n, parte, corta, fob, costo, precio}. Ancho máx 42."""
-    out = [encabezado[:42],
-           f"{'#':<2} {'PARTE':<13} {'DESCRIP':<7}{'FOB':>5}{'COSTO':>6}{'PRECIO':>7}"]
+    out = [encabezado[:42]]
+    if filas:
+        out.append(f"{'#':<2} {'PARTE':<13} {'DESCRIP':<7}{'FOB':>5}{'COSTO':>6}{'PRECIO':>7}")
     for f in filas:
         out.append(f"{f['n']:<2} {f['parte'][:13]:<13} {f['corta'][:7]:<7}"
                    f"{_n(f['fob']):>5}{_n(f['costo']):>6}{_n(f.get('precio')) or '—':>7}")
     if sin_cotizar:
-        out += ["", f"Sin cotizar ({len(sin_cotizar)})"]
+        out += ([""] if filas else []) + [f"Sin cotizar ({len(sin_cotizar)})"]
         for s in sin_cotizar:
             out.append(f"{s['parte'][:13]:<13}  {s['corta'][:9]:<9} {s['motivo']}"[:42])
     if avisos:
