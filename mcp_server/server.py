@@ -393,5 +393,326 @@ async def generate_avk_list(vin: str = "") -> dict:
     }
 
 
+@mcp.tool()
+async def inspect_db(tables: list[str] | None = None) -> dict:
+    """
+    READ-ONLY. Check which Supabase tables really exist as the anon key sees
+    them: row count plus the column names of one sample row (empty tables show
+    no columns). Use it before designing or writing anything, so tools are built
+    against the database as it IS, not as a brief says it should be.
+
+    Args:
+        tables: table names to check. Default: every table the project uses or
+                that a brief says should exist.
+    """
+    import httpx
+    from shared.config import SUPABASE_URL, SUPABASE_ANON_KEY
+    if not SUPABASE_ANON_KEY:
+        return {"ok": False, "error": "SUPABASE_ANON_KEY no esta en .env"}
+    names = tables or [
+        "Order", "OrderItem", "Invoice", "Product", "TariffCode", "Tarea",
+        "Quotation", "QuotationItem", "Client",
+        "cost_params", "part_weight", "part_alias", "tariff_synonym", "tariff_synonyms",
+        "avk_job", "avk_worker", "auvika_prices", "price_cache",
+        "Embarque", "Gasto", "bot_log",
+    ]
+    h = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+         "Prefer": "count=exact"}
+    out = {}
+    async with httpx.AsyncClient(timeout=20) as c:
+        for name in names:
+            try:
+                r = await c.get(f"{SUPABASE_URL}/rest/v1/{name}",
+                                headers={**h, "Range": "0-0"}, params={"select": "*"})
+            except Exception as e:  # noqa: BLE001
+                out[name] = {"existe": None, "error": str(e)}
+                continue
+            if r.status_code in (200, 206):
+                rng = r.headers.get("content-range", "")
+                rows = r.json() or []
+                out[name] = {"existe": True,
+                             "filas": rng.split("/")[-1] if "/" in rng else "?",
+                             "columnas": list(rows[0].keys()) if rows else []}
+            else:
+                try:
+                    msg = r.json().get("message", r.text[:150])
+                except Exception:  # noqa: BLE001
+                    msg = r.text[:150]
+                out[name] = {"existe": False, "http": r.status_code, "error": msg}
+    return {"ok": True, "tablas": out,
+            "nota": "existe:false = no existe o sin GRANT/policy para anon. "
+                    "filas:0 con columnas:[] puede ser tambien RLS sin policy."}
+
+@mcp.tool()
+async def db_select(table: str, filters: dict | None = None, select: str = "*",
+                    order: str = "", limit: int = 20) -> dict:
+    """
+    READ-ONLY. Read rows from a Supabase table (anon key, same access as the
+    dashboard). For inspection and lookups: open orders, an order's items, etc.
+
+    Args:
+        table:   table name, e.g. "Order", "OrderItem".
+        filters: PostgREST filters, e.g. {"estado": "eq.comprado",
+                 "pedido_numero": "eq.142", "cliente": "ilike.*orgu*"}.
+        select:  columns, default "*".
+        order:   e.g. "created_date.desc".
+        limit:   max rows (capped at 200).
+    """
+    import httpx
+    from shared.config import SUPABASE_URL, SUPABASE_ANON_KEY
+    if not SUPABASE_ANON_KEY:
+        return {"ok": False, "error": "SUPABASE_ANON_KEY no esta en .env"}
+    if not table.replace("_", "").isalnum():
+        return {"ok": False, "error": "nombre de tabla invalido"}
+    params = {"select": select, "limit": str(max(1, min(int(limit), 200)))}
+    if order:
+        params["order"] = order
+    for k, v in (filters or {}).items():
+        params[str(k)] = str(v)
+    h = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+         "Prefer": "count=exact"}
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=h, params=params)
+    if r.status_code not in (200, 206):
+        return {"ok": False, "http": r.status_code, "error": r.text[:300]}
+    rng = r.headers.get("content-range", "")
+    return {"ok": True, "total": rng.split("/")[-1] if "/" in rng else None,
+            "rows": r.json()}
+
+# ── Operación de workflow-pro (escrituras) ─────────────────────────────────────
+# Dos pasos siempre: confirmar=False → vista previa; confirmar=True → escribe.
+# El bot muestra la vista previa y SOLO confirma después de un "sí" explícito.
+
+def _uuid_like(x: str) -> bool:
+    import re
+    return bool(re.fullmatch(r"[0-9a-fA-F-]{36}", (x or "").strip()))
+
+
+async def _resolver_pedido(c, pedido: str):
+    """Devuelve (order, None) si hay uno solo; (None, candidatos) si no."""
+    from shared.ops import select
+    if _uuid_like(pedido):
+        rows = await select(c, "Order", {"id": f"eq.{pedido.strip()}", "select": "*"})
+        return (rows[0], None) if rows else (None, [])
+    q = pedido.strip().replace(",", " ").replace("*", "")
+    filtro = f"(numero_pedido.ilike.*{q}*,cliente.ilike.*{q}*,placa.ilike.*{q}*,notas.ilike.*{q}*)"
+    rows = await select(c, "Order", {"or": filtro, "archivado": "is.false",
+                                     "select": "*", "order": "fecha_pedido.desc", "limit": "10"})
+    if len(rows) == 1:
+        return rows[0], None
+    return None, rows
+
+
+@mcp.tool()
+async def find_orders(texto: str = "", incluir_entregados: bool = False, limit: int = 15) -> dict:
+    """
+    READ-ONLY. Buscar pedidos activos (no archivados) por cliente, nombre del
+    pedido, placa o notas (numero de pedido/solicitud del cliente), con sus items.
+    texto vacio = los mas recientes. Usar antes de registrar entregas o compras
+    para identificar el pedido correcto.
+    """
+    import httpx
+    from shared.ops import select, OpsError
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            params = {"archivado": "is.false", "select": "*",
+                      "order": "fecha_pedido.desc", "limit": str(min(limit, 50))}
+            if texto.strip():
+                q = texto.strip().replace(",", " ").replace("*", "")
+                params["or"] = (f"(numero_pedido.ilike.*{q}*,cliente.ilike.*{q}*,"
+                                f"placa.ilike.*{q}*,notas.ilike.*{q}*)")
+            orders = await select(c, "Order", params)
+            out = []
+            for o in orders:
+                items = await select(c, "OrderItem", {
+                    "pedido_id": f"eq.{o['id']}",
+                    "select": "id,producto_nombre,numero_parte,cantidad,estado,precio_compra,precio_venta,fecha_entrega_orden"})
+                if not incluir_entregados and items and all(i["estado"] == "entregado" for i in items):
+                    continue
+                out.append({"id": o["id"], "pedido": o["numero_pedido"], "cliente": o["cliente"],
+                            "fecha": o.get("fecha_pedido"), "placa": o.get("placa"),
+                            "notas": o.get("notas"), "items": items})
+        return {"ok": True, "count": len(out), "pedidos": out}
+    except OpsError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
+async def record_delivery(pedido: str, usuario: str, foto_path: str = "",
+                          excluir: list[str] | None = None, fecha: str = "",
+                          confirmar: bool = False) -> dict:
+    """
+    Registrar la ENTREGA al cliente de un pedido completo (una foto de
+    comprobante = un pedido). Pueden usarlo Alejandro y Santiago.
+
+    Args:
+        pedido:    id del pedido, o texto para buscarlo (cliente, placa, nombre).
+                   Si hay mas de un candidato devuelve la lista: pregunta cual.
+        usuario:   quien manda el mensaje: "Alejandro" o "Santiago".
+        foto_path: ruta local de la foto/PDF del comprobante que llego por Telegram.
+        excluir:   items que NO llegaron (id o parte del nombre): "entregado menos X".
+        fecha:     AAAA-MM-DD; por defecto hoy en Quito.
+        confirmar: False = vista previa (mostrarla y esperar "si").
+                   True  = escribir. Solo despues del "si" explicito.
+    """
+    import httpx, uuid as _u
+    from shared.ops import (select, update, log, subir, validar_archivo,
+                            usuario_valido, hoy_quito, OpsError)
+    try:
+        u = usuario_valido(usuario)
+        f = fecha or hoy_quito()
+        foto = validar_archivo(foto_path) if foto_path else None
+        async with httpx.AsyncClient(timeout=60) as c:
+            order, cands = await _resolver_pedido(c, pedido)
+            if not order:
+                return {"ok": False, "elegir": True,
+                        "error": "No hay un unico pedido que coincida. Pregunta cual.",
+                        "candidatos": [{"id": o["id"], "pedido": o["numero_pedido"],
+                                        "cliente": o["cliente"], "placa": o.get("placa")}
+                                       for o in (cands or [])]}
+            items = await select(c, "OrderItem", {"pedido_id": f"eq.{order['id']}", "select": "*"})
+            pend = [i for i in items if i["estado"] != "entregado"]
+            ex = [e.lower() for e in (excluir or [])]
+            fuera = [i for i in pend if i["id"] in (excluir or [])
+                     or any(e in (i["producto_nombre"] or "").lower() for e in ex)]
+            van = [i for i in pend if i not in fuera]
+            if not van:
+                return {"ok": False, "error": "Ese pedido no tiene items pendientes de entregar."}
+            avisos = [f"{i['producto_nombre']} esta en '{i['estado']}', no en enviado/aduana"
+                      for i in van if i["estado"] in ("adjudicado", "comprado")]
+            linea = lambda i: f"  - {i['producto_nombre']} x{i['cantidad']:g}" if i.get("cantidad") else f"  - {i['producto_nombre']}"
+            texto = (f"Entrega {order['numero_pedido']} — {order['cliente']}\n"
+                     f"Fecha {f} · comprobante: {'si' if foto else 'NO'}\n"
+                     + "\n".join(linea(i) for i in van)
+                     + ("\nNo llegaron:\n" + "\n".join(linea(i) for i in fuera) if fuera else "")
+                     + ("\n⚠ " + "\n⚠ ".join(avisos) if avisos else ""))
+            if not confirmar:
+                return {"ok": True, "vista_previa": True, "texto": texto + "\n¿Sí?",
+                        "pedido_id": order["id"]}
+
+            url = await subir(c, foto, "uploads", "entregas") if foto else None
+            lote = _u.uuid4().hex
+            for i in van:
+                cambios = {"estado": "entregado", "fecha_entrega": f}
+                if url:
+                    cambios["prueba_entrega"] = url
+                antes = {k: i.get(k) for k in cambios}
+                await update(c, "OrderItem", i["id"], cambios)
+                await log(c, u, "record_delivery", "OrderItem", i["id"], antes,
+                          {**cambios, "_lote": lote})
+        return {"ok": True, "escrito": True, "items": len(van),
+                "texto": f"✓ Registrado: {len(van)} item(s) de {order['numero_pedido']} entregados."}
+    except OpsError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
+async def record_expense(usuario: str, monto_usd: float, categoria: str,
+                         fecha: str = "", proveedor: str = "", ruc: str = "",
+                         numero_doc: str = "", iva_usd: float = -1,
+                         pedido: str = "", archivo_path: str = "", notas: str = "",
+                         confirmar: bool = False) -> dict:
+    """
+    Registrar un GASTO del negocio a partir de un recibo/factura.
+
+    Santiago: solo categorias transporte_local, combustible, cliente; queda
+    'por_revisar' hasta que Alejandro lo apruebe. Alejandro: cualquier categoria
+    (flete_origen, courier, aduana_declaracion, transporte_local, combustible,
+    cliente, general), queda 'registrado'.
+
+    Args:
+        usuario:      "Alejandro" o "Santiago" (quien manda el mensaje).
+        monto_usd:    TOTAL pagado, en USD. Leelo del recibo; si no se lee, pregunta.
+        categoria:    ver arriba. Si no es obvio, pregunta.
+        fecha:        AAAA-MM-DD del recibo; por defecto hoy en Quito.
+        proveedor, ruc, numero_doc: del recibo si se leen. No inventar.
+        iva_usd:      IVA del recibo si aparece; -1 = no aparece.
+        pedido:       si el gasto es de un pedido concreto (ej. transporte de una
+                      entrega), id o texto del pedido.
+        archivo_path: ruta local de la foto/PDF del recibo que llego por Telegram.
+        confirmar:    False = vista previa; True = escribir, solo tras "si".
+    """
+    import httpx, uuid as _u
+    from shared.ops import (insert, log, subir, validar_archivo, usuario_valido,
+                            hoy_quito, CATEGORIAS, CATEGORIAS_SANTIAGO, OpsError)
+    try:
+        u = usuario_valido(usuario)
+        cat = (categoria or "").strip().lower().replace(" ", "_")
+        if cat not in CATEGORIAS:
+            raise OpsError(f"categoria '{categoria}' no valida. Opciones: {', '.join(CATEGORIAS)}")
+        if u == "Santiago" and cat not in CATEGORIAS_SANTIAGO:
+            raise OpsError(f"Santiago solo puede registrar: {', '.join(CATEGORIAS_SANTIAGO)}")
+        if not monto_usd or monto_usd <= 0:
+            raise OpsError("falta el monto (mayor a 0)")
+        f = fecha or hoy_quito()
+        arch = validar_archivo(archivo_path) if archivo_path else None
+        estado = "por_revisar" if u == "Santiago" else "registrado"
+        async with httpx.AsyncClient(timeout=60) as c:
+            order = None
+            if pedido:
+                order, cands = await _resolver_pedido(c, pedido)
+                if not order:
+                    return {"ok": False, "elegir": True,
+                            "error": "No hay un unico pedido que coincida. Pregunta cual.",
+                            "candidatos": [{"id": o["id"], "pedido": o["numero_pedido"],
+                                            "cliente": o["cliente"]} for o in (cands or [])]}
+            texto = (f"Gasto {cat} · USD {monto_usd:,.2f}"
+                     + (f" (IVA {iva_usd:,.2f})" if iva_usd >= 0 else "")
+                     + f"\n{f} · {proveedor or 'proveedor ?'}"
+                     + (f" · RUC {ruc}" if ruc else "") + (f" · doc {numero_doc}" if numero_doc else "")
+                     + (f"\nPedido: {order['numero_pedido']}" if order else "")
+                     + f"\nRecibo adjunto: {'si' if arch else 'NO'} · queda {estado}")
+            if not confirmar:
+                return {"ok": True, "vista_previa": True, "texto": texto + "\n¿Sí?"}
+
+            ruta = await subir(c, arch, "documentos", f"gastos/{u.lower()}") if arch else None
+            row = {"fecha": f, "monto_usd": round(float(monto_usd), 2), "categoria": cat,
+                   "subido_por": u, "estado": estado,
+                   "proveedor": proveedor or None, "ruc": ruc or None,
+                   "numero_doc": numero_doc or None,
+                   "iva_usd": round(float(iva_usd), 2) if iva_usd >= 0 else None,
+                   "pedido_id": order["id"] if order else None,
+                   "archivo_url": ruta, "notas": notas or None}
+            g = await insert(c, "Gasto", row)
+            await log(c, u, "record_expense", "Gasto", g["id"], None,
+                      {**row, "_lote": _u.uuid4().hex})
+        return {"ok": True, "escrito": True, "gasto_id": g["id"],
+                "texto": f"✓ Gasto registrado ({estado}): {cat} USD {monto_usd:,.2f}"}
+    except OpsError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
+async def undo_last(usuario: str, confirmar: bool = False) -> dict:
+    """
+    Deshacer la ULTIMA escritura de ese usuario (una entrega completa o un gasto).
+    confirmar=False muestra que se va a deshacer; True lo deshace.
+    Un gasto deshecho queda 'anulado' (no se borra).
+    """
+    import httpx
+    from shared.ops import select, update, usuario_valido, OpsError
+    try:
+        u = usuario_valido(usuario)
+        async with httpx.AsyncClient(timeout=30) as c:
+            last = await select(c, "bot_log", {"usuario": f"eq.{u}", "deshecho": "is.false",
+                                               "order": "created_date.desc", "limit": "1", "select": "*"})
+            if not last:
+                return {"ok": False, "error": "No hay nada para deshacer."}
+            lote = (last[0].get("despues") or {}).get("_lote")
+            filas = await select(c, "bot_log", {"usuario": f"eq.{u}", "deshecho": "is.false",
+                                                "despues->>_lote": f"eq.{lote}", "select": "*"}) if lote else last
+            texto = f"Deshacer {last[0]['tool']} ({len(filas)} fila(s)) del {last[0]['created_date'][:16]}"
+            if not confirmar:
+                return {"ok": True, "vista_previa": True, "texto": texto + "\n¿Sí?"}
+            for r in filas:
+                if r["tabla"] == "Gasto":
+                    await update(c, "Gasto", r["fila_id"], {"estado": "anulado"})
+                elif r["antes"]:
+                    await update(c, r["tabla"], r["fila_id"], r["antes"])
+                await update(c, "bot_log", r["id"], {"deshecho": True})
+        return {"ok": True, "escrito": True, "texto": "✓ " + texto}
+    except OpsError as e:
+        return {"ok": False, "error": str(e)}
+
 if __name__ == "__main__":
     mcp.run()
