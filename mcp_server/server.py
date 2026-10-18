@@ -899,8 +899,8 @@ async def quote_list(parts: list[dict], cliente: str = "", vin: str = "", brand:
                 if len(set(tasas)) > 1:
                     supuestos.append(f"arancel {max(tasas):g}% (máx de {len(set(tasas))})")
                 c = await quote_quito_cost(**kw)
-                if c.get("ok"):
-                    c["revisar_arancel"] = True
+                if c.get("ok") and len(set(tasas)) > 1:
+                    c["revisar_arancel"] = True   # tasas iguales = el % es seguro, no se avisa
             elif "peso" in (c.get("error") or "").lower() and not kw.get("weight_kg"):
                 kw["weight_kg"] = PESO_PIEZA_CHICA if _es_pieza_chica(_normalizar_desc(desc)) else _peso_conservador()
                 supuestos.append(f"peso {kw['weight_kg']:g} kg supuesto")
