@@ -742,7 +742,7 @@ _SINONIMOS = {
     "retrovisor": "espejo", "o-ring": "oring", "orring": "oring",
 }
 # Piezas chicas: si no hay base para estimar el peso, NO usar el percentil 75.
-_PIEZAS_CHICAS = ("remache", "clip", "grapa", "tornillo", "perno", "tuerca", "oring",
+_PIEZAS_CHICAS = ("remache", "clip", "grapa", "tornillo", "perno", "tuerca", "oring", "o-ring", "anillo",
                   "arandela", "empaque", "junta", "sello", "reten", "tapon", "emblema",
                   "logo", "insignia", "fusible", "rele", "bombillo", "foco", "pin",
                   "resorte", "abrazadera", "seguro", "tapa valvula")
