@@ -760,11 +760,19 @@ def _es_pieza_chica(desc: str) -> bool:
     return any(k in d for k in _PIEZAS_CHICAS)
 
 
-def _marca_por_numero(partes: list[str]) -> str:
-    """Ford: 4to caracter 'Z' (8L8Z-..., NL1Z-..., BL8Z...). Solo si TODAS coinciden."""
+def _marca_por_numero(partes: list[str], descripciones: list[str] | None = None) -> str:
+    """Ford si la MAYORÍA de los números tiene la 'Z' en el 4to carácter (8L8Z-, NL1Z-, BL8Z…)
+    o si las descripciones nombran un modelo Ford (RANG, ESCH, TERRI, EXPLORER…).
+    Antes exigía TODAS: una sola parte rara (código Finis, número JMC) dejaba la lista
+    sin marca y eBay buscaba sin el filtro Brand:Ford (precios distintos, genuinos perdidos)."""
     import re
-    limpias = [re.sub(r"[^A-Z0-9]", "", (x or "").upper()) for x in partes if x]
-    if limpias and all(re.match(r"^[A-Z0-9]{3}Z[A-Z0-9]{4,}", x) for x in limpias):
+    limpias = [re.sub(r"[^A-Z0-9]", "", (x or "").upper()) for x in partes if x and x != "?"]
+    ford = sum(1 for x in limpias if re.match(r"^[A-Z0-9]{3}Z[A-Z0-9]{4,}", x))
+    if limpias and ford * 2 >= len(limpias) and ford > 0:
+        return "ford"
+    texto = " ".join(descripciones or []).upper()
+    if re.search(r"\b(RANG|RANGER|ESCH|ESCAPE|TERRI|TERRITORY|EXPLORER|EXPL|ECOSPORT|"
+                 r"FIESTA|FOCUS|BRONCO|EXPEDITION|MUSTANG|F-?150|F-?250|FUSION|MAVERICK)\b", texto):
         return "ford"
     return ""
 
@@ -832,7 +840,8 @@ async def quote_list(parts: list[dict], cliente: str = "", vin: str = "", brand:
     tier = await _tier_cliente(cliente) if not sin_cliente else await _tier_por_defecto()
     cliente_nuevo = (not sin_cliente) and tier is None
     if not vin and not brand:
-        brand = _marca_por_numero([p.get("parte", "") for p in parts])
+        brand = _marca_por_numero([p.get("parte", "") for p in parts],
+                                  [p.get("descripcion", "") for p in parts])
     m = margin_pct if margin_pct >= 0 else (float(tier["margen_sugerido"]) if tier else None)
     mmin = float(tier["margen_min"]) if tier else None
 
