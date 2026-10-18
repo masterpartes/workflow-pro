@@ -185,6 +185,7 @@ Existe además la skill `master-partes-presupuesto` (PNG con logo, columnas N°/
 ## 7. Pendientes, en orden sugerido
 
 **Inmediato**
+> ✅ 18-oct 19:40 (Budapest): relay PROBADO en vivo (/ping, lista sin IA, `cliente zurich`, consulta por Claude, /uso: 3 mensajes, 2 sin IA, 0.09 USD equiv). `/status` = **Claude Pro account** (no API). Push a `backup-2026-10-13` hecho (701ebe8). El relay ahora quita `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` antes de `claude -p`. `directo.py` parte listas que llegan en UNA línea (varias partes seguidas). Backups `*.bak-2026-10-18` en `relay\`. Nissan X-Trail: descartado por el dueño. Los ítems 1–3 de abajo quedan hechos.
 1. Probar el relay (VPN/firewall primero): `/ping` → lista tipeada → `cliente zurich` → `peso cubo 4` → foto → `/uso`.
 2. Confirmar suscripción (no "API Usage Billing") y, en el relay, que `claude -p` use la misma cuenta.
 3. `git push origin HEAD:backup-2026-10-13` desde PowerShell del dueño (nunca se hizo push; push a `main` dispara deploy en Vercel).
