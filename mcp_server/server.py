@@ -990,6 +990,46 @@ async def quote_detail(ref: str, parte: str = "") -> dict:
 # ── Cotización vendida → pedido ────────────────────────────────────────────────
 
 @mcp.tool()
+async def buscar_numeros_vin(vin: str, descripciones: list[str], cliente: str = "",
+                             cotizar: bool = True) -> dict:
+    """
+    BUSCAR NUMEROS DE PARTE POR VIN (cuando llegan VIN + descripciones SIN numeros).
+
+    Consulta el catalogo OEM (PartSouq, vía el worker del Chrome del dueño), empareja
+    cada descripción con el número del diagrama y, si `cotizar`, cotiza lo encontrado
+    con quote_list. Requiere el worker de catálogo corriendo; si no, devuelve un error
+    que dice qué hacer. Nunca inventa números: lo dudoso vuelve con ⚠.
+
+    Args:
+        vin: 17 caracteres (sin I, O, Q).
+        descripciones: ["faro derecho", "parachoque delantero x2", ...]. Máx 12.
+        cliente: como lo escribió el usuario (para el tier); vacío → tier B.
+        cotizar: False = solo devolver la lista de números.
+
+    Devuelve {ok, lista, tabla?, ref?}. Mandá `lista` y luego `tabla` (si hay) tal cual.
+    """
+    import re as _re
+    from catalog_live import buscar_numeros, normalizar_vin
+    items = []
+    for d in descripciones or []:
+        m = _re.search(r"\b[xX]\s?(\d{1,3})\b\s*$", str(d).strip())
+        items.append({"descripcion": _re.sub(r"\s*\b[xX]\s?\d{1,3}\b\s*$", "", str(d)).strip(),
+                      "cantidad": int(m.group(1)) if m else 1})
+    r = await buscar_numeros(vin, items)
+    if not r.get("ok"):
+        return {"ok": False, "error": r.get("error", "falló la búsqueda"),
+                "worker_caido": bool(r.get("worker_caido"))}
+    out = {"ok": True, "lista": r["texto"]}
+    if cotizar and r["partes"]:
+        q = await quote_list(r["partes"], cliente=cliente, vin=normalizar_vin(vin), brand=r["marca"])
+        if q.get("ok"):
+            out.update(tabla=q["tabla"], ref=q["ref"])
+        else:
+            out["aviso_cotizacion"] = q.get("error") or "no se pudo cotizar"
+    return out
+
+
+@mcp.tool()
 async def create_order(ref: str, filas: list[int], usuario: str,
                        nombre_pedido: str = "", notas: str = "", placa: str = "",
                        precios: list[float] | None = None, fecha_entrega: str = "",
