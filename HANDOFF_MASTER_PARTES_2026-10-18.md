@@ -186,6 +186,13 @@ Existe además la skill `master-partes-presupuesto` (PNG con logo, columnas N°/
 
 **Inmediato**
 > ✅ 18-oct 19:40 (Budapest): relay PROBADO en vivo (/ping, lista sin IA, `cliente zurich`, consulta por Claude, /uso: 3 mensajes, 2 sin IA, 0.09 USD equiv). `/status` = **Claude Pro account** (no API). Push a `backup-2026-10-13` hecho (701ebe8). El relay ahora quita `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` antes de `claude -p`. `directo.py` parte listas que llegan en UNA línea (varias partes seguidas). Backups `*.bak-2026-10-18` en `relay\`. Nissan X-Trail: descartado por el dueño. Los ítems 1–3 de abajo quedan hechos.
+> ✅ 18-oct 20:10, más arreglos (commits a2be1c0, 1b14d80, a425cfb, 8bf41a6, SIN push):
+> - Arancel: ya no avisa "verificar arancel" si todas las subpartidas candidatas tienen la MISMA tasa.
+> - Piezas chicas: + "anillo", "o-ring" (0.1 kg).
+> - Marca Ford: por MAYORÍA de números con Z en 4º carácter, o por modelo en la descripción (RANG, ESCH, TERRI, EXPLORER…). Antes exigía todas.
+> - `oem_service.lookup_parts`: normaliza la marca ("Ford"→"ford"). Con mayúscula caía al camino de marca desconocida y eBay buscaba sin filtro Brand:Ford (tanque JB3Z8A080A salía 89 en vez de 47; anillo 1138392 sin precio).
+> - Foto por Telegram PROBADA (lista ORGU Ranger/Territory): lee bien filas y cantidades, ~130k tokens y ~40 s por foto. Inconsistencias de Sonnet: una vez dejó el prefijo "L-" (L-EB3Z6K775Q → sin precio) y una vez adivinó un carácter tapado (EB3Z9L440BA) pese a la regla.
+> **Próximo:** (a) reiniciar bot y re-probar la foto ORGU (esperado: tanque ~86 tier B, anillo con precio); (b) el campo `url` de filas eBay guarda la búsqueda del sitio OEM/PartSouq, no el listado de eBay → arreglar para poder verificar; (c) Territory (JMC) AB399L440BF / 9P26B624AA07: probar PartSouq/AVK; (d) push de los commits nuevos a backup; (e) uso Pro al 70% el 18-oct, mayormente esta conversación en Opus → sesiones nuevas y Sonnet.
 1. Probar el relay (VPN/firewall primero): `/ping` → lista tipeada → `cliente zurich` → `peso cubo 4` → foto → `/uso`.
 2. Confirmar suscripción (no "API Usage Billing") y, en el relay, que `claude -p` use la misma cuenta.
 3. `git push origin HEAD:backup-2026-10-13` desde PowerShell del dueño (nunca se hizo push; push a `main` dispara deploy en Vercel).
