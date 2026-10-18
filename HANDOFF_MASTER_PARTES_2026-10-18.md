@@ -248,3 +248,17 @@ campos/separador del sitio de subasta; texto fijo de proforma; formato de las fa
 - `C:\MasterPartesBot\`: `CLAUDE.md`, `.claude\settings.json`, `.mcp.json`, `INICIAR_BOT.bat`, `relay\{telegram_relay.py,
   directo.py,relay_config.json,uso.csv}`, `inbox\`.
 - Último commit: `0f70483` (18-oct). Rama `main` local, sin push.
+
+---
+## 11. Diseño acordado 18-oct 20:20 — "Buscar números por VIN" desde Telegram (POR CONSTRUIR)
+Idea del dueño: Santiago manda foto/texto con **VIN + descripciones (sin números de parte)** → la laptop busca en el
+catálogo (OEM / PartSouq / partslink24) **sin interacción** → vuelve a Telegram solo la lista de números (y, encadenado, la tabla de `quote_list`).
+Propuesta técnica (no tocar el bot de Santiago para darle web abierta):
+1. El relay detecta "VIN sin números de parte" → crea un trabajo `catalog_job` (como `avk_job`) y contesta "buscando…".
+2. **Worker de catálogo en el Chrome del dueño** (mismo patrón que el AVK worker): usa las sesiones ya abiertas
+   (PartSouq pasa Cloudflare en Chrome real; partslink24 con su login). Navega VIN → grupo → diagrama y devuelve la lista
+   de piezas del diagrama en texto. Determinístico, sin IA. Revisar términos de uso de partslink24 antes de automatizarlo.
+3. **Una sola llamada chica de IA** (Sonnet, sin herramientas de escritura ni web) empareja "faro derecho" ↔ "HEADLAMP ASSY RH"
+   con la lista del diagrama. Salida estricta: descripción · número · fuente · confianza; dudosas con ⚠, nunca inventadas.
+4. Con los números → `quote_list` (sin IA) → tabla a Santiago. Reusar skill existente `partsouq-vin-parts-lookup`.
+Requisitos: laptop prendida, Chrome abierto con PartSouq/partslink24 logueados y el worker activo. Costo estimado ≈ un mensaje con foto.
