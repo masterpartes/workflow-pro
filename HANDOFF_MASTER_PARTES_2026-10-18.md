@@ -257,7 +257,7 @@ Propuesta técnica (no tocar el bot de Santiago para darle web abierta):
 1. El relay detecta "VIN sin números de parte" → crea un trabajo `catalog_job` (como `avk_job`) y contesta "buscando…".
 2. **Worker de catálogo en el Chrome del dueño** (mismo patrón que el AVK worker): usa las sesiones ya abiertas
    (PartSouq pasa Cloudflare en Chrome real; partslink24 con su login). Navega VIN → grupo → diagrama y devuelve la lista
-   de piezas del diagrama en texto. Determinístico, sin IA. Revisar términos de uso de partslink24 antes de automatizarlo.
+   de piezas del diagrama en texto. La NAVEGACIÓN es código (pedidos dentro de la pestaña + parseo del HTML); las DECISIONES (qué grupo abrir) las toma un mapa de palabras clave (faro→iluminación, parachoque→carrocería delantera) y, si no alcanza, una llamada chica de IA que elige entre los NOMBRES de grupos en texto (sin capturas de pantalla). partslink24 es una app JS pesada: hay que estudiar sus llamadas internas; PRIMER PROTOTIPO en PartSouq con el VIN del Montero (MMBGUKS50PH001101; resultado conocido: faro der 8301D438). Revisar términos de uso de partslink24 antes de automatizarlo.
 3. **Una sola llamada chica de IA** (Sonnet, sin herramientas de escritura ni web) empareja "faro derecho" ↔ "HEADLAMP ASSY RH"
    con la lista del diagrama. Salida estricta: descripción · número · fuente · confianza; dudosas con ⚠, nunca inventadas.
 4. Con los números → `quote_list` (sin IA) → tabla a Santiago. Reusar skill existente `partsouq-vin-parts-lookup`.
