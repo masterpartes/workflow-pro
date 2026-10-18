@@ -26,3 +26,15 @@ Fuente de verdad del diseño: `BRIEF_MASTER_PARTES_v3.md`. Esto es solo el estad
 - Login en el dashboard (anon key con escritura total, pública en Vercel).
 - Tools: compras/avanzar etapa, embarques + prorrateo por peso, ventas (XML SRI), página Márgenes, digest matinal.
 - Quotation/QuotationItem de Supabase sin usar (las cotizaciones viven en `workflow-pro\data\cotizaciones\*.json`).
+
+
+## Actualización 18-oct
+- Relay + **carril sin IA** listos (sin probar en Windows): `C:\MasterPartesBot\relay\directo.py`. Listas tipeadas
+  ("PARTE descripción" por línea, + cliente/marca/VIN opcionales; BMW con espacios se junta) y correcciones
+  ("cliente X", "m=40", "peso <fila|palabra> 4", "arancel <fila|palabra> 15", "partsouq", "avk", "alterno", "oem", "ebay")
+  se cotizan llamando `quote_list` directo: cero IA. Lo demás (fotos, texto libre, "sí") → `claude -p` corto.
+- `/uso` muestra cuántos mensajes fueron sin IA. Log: `relay\uso.csv` (columna `carril`).
+- Arreglos de la cotización BMW: BMW Parts Giant primero y bmwpartsdeal de respaldo; sinónimos (paragolpes→parachoques,
+  alma→refuerzo, farol→faro…); piezas chicas (remache, clip, o-ring, tornillo…) sin base de peso → 0.1 kg, no 3.2 kg.
+- Cada cotización guarda su `entrada` en la caché → las correcciones recotizan exacto.
+- Pendiente: probar el relay; flag de precio > MSRP; Nissan X-Trail JN1TBAT32NW006903 (faros, parachoque, base faro RH) sin buscar.

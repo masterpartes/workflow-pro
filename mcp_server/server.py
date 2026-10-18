@@ -734,6 +734,32 @@ async def _tier_cliente(cliente: str) -> Optional[dict]:
     return hits[0] if hits else None
 
 
+# Palabras de otros países / del taller → las que entienden TariffCode y part_weight.
+_SINONIMOS = {
+    "paragolpes": "parachoques", "paragolpe": "parachoque", "defensa": "parachoques",
+    "bomper": "parachoques", "bumper": "parachoques", "alma": "refuerzo",
+    "farol": "faro", "guardabarro": "guardafango", "guardabarros": "guardafango",
+    "retrovisor": "espejo", "o-ring": "oring", "orring": "oring",
+}
+# Piezas chicas: si no hay base para estimar el peso, NO usar el percentil 75.
+_PIEZAS_CHICAS = ("remache", "clip", "grapa", "tornillo", "perno", "tuerca", "oring",
+                  "arandela", "empaque", "junta", "sello", "reten", "tapon", "emblema",
+                  "logo", "insignia", "fusible", "rele", "bombillo", "foco", "pin",
+                  "resorte", "abrazadera", "seguro", "tapa valvula")
+PESO_PIEZA_CHICA = 0.1
+
+
+def _normalizar_desc(desc: str) -> str:
+    import re
+    palabras = re.split(r"(\s+)", desc or "")
+    return "".join(_SINONIMOS.get(w.lower(), w) for w in palabras)
+
+
+def _es_pieza_chica(desc: str) -> bool:
+    d = (desc or "").lower()
+    return any(k in d for k in _PIEZAS_CHICAS)
+
+
 def _marca_por_numero(partes: list[str]) -> str:
     """Ford: 4to caracter 'Z' (8L8Z-..., NL1Z-..., BL8Z...). Solo si TODAS coinciden."""
     import re
@@ -851,7 +877,7 @@ async def quote_list(parts: list[dict], cliente: str = "", vin: str = "", brand:
             continue
         fuentes.add(src)
 
-        kw = dict(part_price=float(fob), descripcion=desc, currency=currency,
+        kw = dict(part_price=float(fob), descripcion=_normalizar_desc(desc), currency=currency,
                   margin_pct=m or 0, freight_origin=freight_origin_eur if currency == "EUR" else 0.0)
         peso = p.get("peso_kg") or r.get("peso_kg")
         if peso:
@@ -876,7 +902,7 @@ async def quote_list(parts: list[dict], cliente: str = "", vin: str = "", brand:
                 if c.get("ok"):
                     c["revisar_arancel"] = True
             elif "peso" in (c.get("error") or "").lower() and not kw.get("weight_kg"):
-                kw["weight_kg"] = _peso_conservador()
+                kw["weight_kg"] = PESO_PIEZA_CHICA if _es_pieza_chica(_normalizar_desc(desc)) else _peso_conservador()
                 supuestos.append(f"peso {kw['weight_kg']:g} kg supuesto")
                 c = await quote_quito_cost(**kw)
             else:
@@ -928,7 +954,8 @@ async def quote_list(parts: list[dict], cliente: str = "", vin: str = "", brand:
             "cliente": cliente, "cliente_tabla": tier["nombre"] if tier else None,
             "tier": tier["tier"] if tier else None, "margen_pct": m, "margen_min": mmin,
             "vin": vin, "brand": brand, "source": source, "precio": precio,
-            "filas": filas, "sin_cotizar": sin, "avisos": avisos}
+            "filas": filas, "sin_cotizar": sin, "avisos": avisos,
+            "entrada": parts, "freight_origin_eur": freight_origin_eur}
     guardar(ref, data)
     # Respuesta corta a propósito: todo lo que vuelve acá queda en el contexto del
     # bot y se paga en cada mensaje siguiente. El detalle vive en la caché (quote_detail).

@@ -80,7 +80,7 @@ _PARTS_SITES: dict[str, tuple[str, str]] = {
     "nissan":     ("https://www.nissanpartsdeal.com",      "nissan"),
     "mopar":      ("https://www.moparpartsgiant.com",      "mopar"),
     "audi":       ("https://www.audipartsgiant.com",       "audi"),
-    "bmw":        ("https://www.bmwpartsdeal.com",         "bmw"),
+    "bmw":        ("https://www.bmwpartsgiant.com",        "bmw"),
     "gm":         ("https://www.gmpartsgiant.com",         "gm"),
     "honda":      ("https://www.hondapartsnow.com",        "honda"),
     "lexus":      ("https://www.lexuspartsnow.com",        "lexus"),
@@ -91,6 +91,11 @@ _PARTS_SITES: dict[str, tuple[str, str]] = {
     # Mercedes removed: mbpartsgiant.com requires a session-based vehicle selection that
     # can't be replicated with a stateless httpx request. Mercedes routes to PartSouq + eBay
     # via the unknown-brand fallback path, same as other non-US-market vehicles.
+}
+
+# Second site to try (same platform) before falling back to PartSouq.
+_PARTS_SITES_ALT: dict[str, tuple[str, str]] = {
+    "bmw": ("https://www.bmwpartsdeal.com", "bmw"),
 }
 
 VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.I)
@@ -684,6 +689,18 @@ async def _lookup_parts_via_httpx(
             asyncio.gather(*site_tasks),
             asyncio.gather(*ebay_tasks),
         )
+
+    # Second US site of the same platform, when the brand has one (e.g. BMW).
+    alt = _PARTS_SITES_ALT.get(brand)
+    if alt:
+        miss = [i for i, site in enumerate(site_results) if site.get("price") is None]
+        if miss:
+            async with httpx.AsyncClient(headers=_HTTP_HEADERS) as client:
+                alt_res = await asyncio.gather(*[
+                    _fetch_parts_site(client, real[i][0], alt[0], alt[1]) for i in miss])
+            for i, r in zip(miss, alt_res):
+                if r.get("price") is not None:
+                    site_results[i] = r
 
     # PartSouq fallback for anything the primary site didn't have.
     fallback_idx = [i for i, site in enumerate(site_results) if site.get("price") is None]
