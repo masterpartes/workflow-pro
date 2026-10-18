@@ -927,7 +927,10 @@ async def lookup_parts(
     brand:   explicit brand override (e.g. 'toyota')
     headless: run Playwright headlessly (non-Ford brands only)
     """
-    effective_brand = brand or brand_from_vin(vin or "")
+    # "Ford"/"FORD"/"Ranger" → "ford": con mayúscula no coincidía con _PARTS_SITES y la
+    # lista caía al camino de marca desconocida (eBay sin filtro Brand, precios distintos).
+    effective_brand = ((brand_from_text(brand) or brand.strip().lower()) if brand else None) \
+        or brand_from_vin(vin or "")
     base_url = OEM_URLS.get(effective_brand) if effective_brand else None
 
     # Mercedes: Playwright on mbpartsgiant.com (requires a VIN-based vehicle session)
