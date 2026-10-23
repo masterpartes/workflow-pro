@@ -280,6 +280,73 @@ async def search_part(part_number: str, descripcion: str = "", brand: str = "") 
     return result
 
 
+async def search_by_description(query: str, year: str = "", make: str = "", model: str = "",
+                                limit: int = 10) -> dict:
+    """
+    Busca por DESCRIPCION en ingles (no por numero de parte): nuevo + Buy It Now + envio a
+    Miami 33195. Con year/make/model usa el filtro de COMPATIBILIDAD de eBay Motors, que deja
+    solo publicaciones que declaran ajustar a ese vehiculo (mucho mas fiable que el texto).
+
+    Pensado para cotizar "algo suficientemente bueno" de autos comunes en EE.UU. cuando no hay
+    numero de parte (p.ej. Ford Escape 2010): despues, si se gana la subasta, se hace la
+    busqueda exacta. Devuelve los `limit` mejores por relevancia con total = precio + envio.
+
+    Return: {ok, query, compat, items:[{titulo, precio, envio, total, calidad, url, vendedor}],
+             genuino_min, alterno_min, url_busqueda, error}
+    calidad: "genuine" (palabras OEM/Motorcraft... o marca) | "aftermarket" | "unknown".
+    """
+    out = {"ok": False, "query": query, "compat": None, "items": [], "genuino_min": None,
+           "alterno_min": None, "url_busqueda": "", "error": None}
+    token = await _get_access_token()
+    if not token:
+        out["error"] = "no_credentials"
+        return out
+
+    import urllib.parse as _up
+    params = {
+        "q": query.strip(),
+        "category_ids": AUTO_PARTS_CATEGORY,
+        "limit": str(max(1, min(int(limit), 20))),
+        "filter": "conditionIds:{1000},buyingOptions:{FIXED_PRICE}",
+    }
+    if year and make and model:
+        out["compat"] = f"Year:{year};Make:{make};Model:{model}"
+        params["compatibility_filter"] = out["compat"]
+    out["url_busqueda"] = ("https://www.ebay.com/sch/6028/i.html?_nkw=" + _up.quote_plus(query.strip())
+                           + "&LH_BIN=1&LH_ItemCondition=1000&LH_Shipped_to=US")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+        "X-EBAY-C-ENDUSERCTX": "contextualLocation=country%3D" + SHIPPING_COUNTRY + "%2Czip%3D" + SHIPPING_ZIP,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.get(EBAY_BROWSE_URL, params=params, headers=headers)
+        if r.status_code != 200:
+            out["error"] = f"http_{r.status_code}: {r.text[:160]}"
+            return out
+        for it in r.json().get("itemSummaries", []):
+            try:
+                precio = float(it["price"]["value"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            envio = _shipping_cost(it)
+            titulo = it.get("title", "")
+            out["items"].append({
+                "titulo": titulo, "precio": round(precio, 2), "envio": envio,
+                "total": round(precio + (envio or 0), 2), "calidad": _classify(titulo),
+                "url": it.get("itemWebUrl", ""),
+                "vendedor": (it.get("seller") or {}).get("username"),
+            })
+        g = [i["total"] for i in out["items"] if i["calidad"] == "genuine"]
+        a = [i["total"] for i in out["items"] if i["calidad"] != "genuine"]
+        out["genuino_min"], out["alterno_min"] = (min(g) if g else None), (min(a) if a else None)
+        out["ok"] = True
+    except Exception as e:                       # noqa: BLE001
+        out["error"] = str(e)
+    return out
+
+
 def compute_deletion_challenge_response(
     challenge_code: str, verification_token: str, endpoint: str
 ) -> str:

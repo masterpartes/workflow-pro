@@ -1,0 +1,37 @@
+{
+  "_nota": "Reglas de triage de invitaciones SIPO (carpeta INBOX.SIPO del correo de Santiago). Las define el dueno; editar aqui, no en codigo. Lo que no encaja en ninguna regla va a REVISAR, nunca se descarta en silencio.",
+  "_actualizado": "2026-10-23",
+  "no_cotizar_marcas": [
+    "BYD",
+    "Chevrolet",
+    "Renault"
+  ],
+  "casi_nunca": {
+    "marcas": [
+      "Mazda"
+    ],
+    "accion": "NO por defecto; el dueno decide si hay excepcion"
+  },
+  "cotizar_marcas": [
+    "Ford"
+  ],
+  "revisar_marcas": {
+    "Toyota": "Se cotiza solo por pieza, caso por caso: modelos locales / versiones para Ecuador (faros distintos), carroceria prohibitiva en flete aereo. Sirven piezas mecanicas compartidas con otros modelos. El dueno sube los precios que tengan sentido.",
+    "Nissan": "Igual que Toyota. Excepcion conocida: faros de X-Trail y Qashqai si se pueden cotizar."
+  },
+  "orden": "por hora de cierre ascendente",
+  "corte_del_lote": "la ultima bandera roja de la carpeta = ultimo cotizado; lo pendiente es lo recibido despues",
+  "duplicados": "la misma Clave puede llegar dos veces (ventana de 12 h y de 6 h): se deja una fila por Clave con el cierre mas temprano",
+  "pendiente_de_definir": [
+    "lista exacta de modelos Toyota/Nissan por pieza",
+    "que hacer con Mazda excepcionales"
+  ],
+  "no_cotizar_modelos": {
+    "Ford EcoSport": "mercado brasileno (VIN 9BF...): no se cotiza"
+  },
+  "ford_fuente_de_numeros": {
+    "Escape/Kuga europeo (VIN WF0...)": "numero por partslink24 (en el Chrome del dueno, sesion manual); prioridad alta: pocos proveedores lo consiguen",
+    "Escape de EE.UU. (VIN 1FM...)": "sin numero: precio aproximado en eBay por descripcion en ingles con filtro de compatibilidad (tool ebay_por_descripcion); busqueda exacta solo si se gana la subasta"
+  },
+  "vin_dudoso": "Algunos talleres escriben mal el VIN (tambien cotizan): VIN de 15 caracteres o inconsistente con la marca -> avisar al dueno, no confiar"
+}

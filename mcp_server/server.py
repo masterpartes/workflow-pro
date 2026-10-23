@@ -1030,6 +1030,40 @@ async def buscar_numeros_vin(vin: str, descripciones: list[str], cliente: str = 
 
 
 @mcp.tool()
+async def ebay_por_descripcion(piezas: list[str], year: str = "", make: str = "", model: str = "",
+                               limite: int = 8) -> dict:
+    """
+    PRECIO APROXIMADO EN EBAY POR DESCRIPCION (sin numero de parte). Para autos comunes en
+    EE.UU. (p.ej. Ford Escape 2010) cuando hay que cotizar rapido una subasta y la busqueda
+    exacta se hace solo si se gana.
+
+    Args:
+        piezas: descripciones EN INGLES, una por pieza ("right passenger side power mirror").
+                Traducilas vos desde el pedido en espanol.
+        year, make, model: activan el filtro de COMPATIBILIDAD de eBay Motors
+                ("2010", "Ford", "Escape"): solo publicaciones que declaran ajustar a ese auto.
+        limite: publicaciones a revisar por pieza (max 20).
+
+    Devuelve por pieza: genuino_min / alterno_min (precio + envio a Miami, USD), las 3 mejores
+    publicaciones (titulo, total, calidad, url) y la URL de la busqueda. NO es un numero de
+    parte: sirve de FOB aproximado; el humano valida el titulo antes de subir precio.
+    """
+    import asyncio as _aio
+    from ebay_service import search_by_description
+    res = await _aio.gather(*[search_by_description(p, year, make, model, limite) for p in piezas])
+    filas = []
+    for p, r in zip(piezas, res):
+        filas.append({
+            "pieza": p, "ok": r["ok"], "compat": r["compat"], "error": r["error"],
+            "genuino_min": r["genuino_min"], "alterno_min": r["alterno_min"],
+            "top": [{"total": i["total"], "calidad": i["calidad"], "titulo": i["titulo"][:90],
+                     "url": i["url"]} for i in r["items"][:3]],
+            "url_busqueda": r["url_busqueda"],
+        })
+    return {"ok": all(f["ok"] for f in filas), "piezas": filas}
+
+
+@mcp.tool()
 async def create_order(ref: str, filas: list[int], usuario: str,
                        nombre_pedido: str = "", notas: str = "", placa: str = "",
                        precios: list[float] | None = None, fecha_entrega: str = "",
