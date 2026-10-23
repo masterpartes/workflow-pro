@@ -163,6 +163,7 @@ Reglas estrictas:
 - Elegí SOLO números que figuran en "piezas" de ese pedido. Jamás inventes ni completes un número.
 - Lado: "derecho"/"der" = RH, "izquierdo"/"izq" = LH; en el catálogo el lado puede venir en la descripción (,RH / ,LH) o en el callout (termina en R o L). Si el pedido no dice lado y la pieza tiene lados, elegí con confianza "baja" y decilo en motivo.
 - Elegí la pieza principal que el pedido nombra (el faro, no su arnés ni su tornillo). Si hay varias candidatas válidas, elegí la más probable y bajá la confianza.
+- Si lo único parecido es un accesorio o parte secundaria de lo pedido (moldura/trim, almohadilla/pad, soporte/bracket, protector/shield, tornillo, clip), NO la elijas: numero = null y decí en motivo qué falta (ej. "el diagrama no trae el panel del guardafango").
 - "reemplazo" es el número que sustituye a esa pieza: NO lo elijas; mencionalo en motivo si existe.
 - Si ninguna pieza corresponde, numero = null.
 - confianza: "alta" (descripción y lado coinciden sin duda), "media", "baja".
