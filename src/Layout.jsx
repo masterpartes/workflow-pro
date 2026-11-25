@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useLocation } from "react-router-dom";
 import { createPageUrl } from "@/utils";
-import { LayoutDashboard, Calculator, Package, FileText, LogOut } from "lucide-react";
+import { LayoutDashboard, Calculator, Package, FileText, LogOut, Table } from "lucide-react";
 import { useAuth } from "@/lib/AuthContext";
 import {
 Sidebar,
@@ -19,6 +19,11 @@ SidebarTrigger,
 } from "@/components/ui/sidebar";
 
 const navigationItems = [
+{
+title: "Líneas",
+url: createPageUrl("Lineas"),
+icon: Table,
+},
 {
 title: "Dashboard",
 url: createPageUrl("Dashboard"),

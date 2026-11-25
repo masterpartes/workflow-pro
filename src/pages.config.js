@@ -2,6 +2,7 @@ import Dashboard from './pages/Dashboard';
 import Cotizacion from './pages/Cotizacion';
 import Pedidos from './pages/Pedidos';
 import Facturacion from './pages/Facturacion';
+import Lineas from './pages/Lineas';
 import __Layout from './Layout.jsx';
 
 export const PAGES = {
@@ -9,6 +10,7 @@ export const PAGES = {
 "Cotizacion": Cotizacion,
 "Pedidos": Pedidos,
 "Facturacion": Facturacion,
+"Lineas": Lineas,
 }
 
 export const pagesConfig = {
