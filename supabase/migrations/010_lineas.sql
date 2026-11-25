@@ -82,7 +82,7 @@ SELECT
         add_business_days(coalesce(o.fecha_pedido, i.created_date::date), 20)) < current_date) AS atrasado,
   c.plazo_pago_dias
 FROM "OrderItem" i
-LEFT JOIN "Order"  o ON o.id::text = i.pedido_id
+LEFT JOIN "Order"  o ON o.id::text = i.pedido_id::text
 LEFT JOIN LATERAL (
   SELECT plazo_pago_dias FROM "Client" c
   WHERE upper(o.cliente) LIKE '%' || upper(c.nombre) || '%'
