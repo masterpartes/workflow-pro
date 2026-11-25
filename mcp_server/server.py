@@ -1160,5 +1160,44 @@ async def create_order(ref: str, filas: list[int], usuario: str,
     except OpsError as e:
         return {"ok": False, "error": str(e)}
 
+@mcp.tool()
+async def render_presupuesto(items: list[dict], cliente: str = "", vehiculo: str = "",
+                             numero: str = "", moneda: str = "$") -> dict:
+    """
+    IMAGEN DE PRESUPUESTO PARA EL CLIENTE (logo Master Partes, N°/descripción/marca/precio,
+    total, pie "Precios no incluyen IVA · Entrega: 20 días (importación)").
+    Es lo que se reenvía al cliente: NUNCA costos, márgenes, fuentes ni números de parte.
+
+    Args:
+        items:    [{"descripcion": "Faro delantero derecho", "marca": "Genuino", "precio": 556}]
+                  en el orden en que se presentan; "marca" = Genuino / Alterno / la marca.
+        cliente, vehiculo: van en el encabezado (vacío = se omite).
+        numero:   número de presupuesto (vacío = fecha+hora).
+    Devuelve {"ok", "imagen"}: poné la ruta en la respuesta como [[IMAGEN: <ruta>]]
+    y el relay de Telegram la manda como foto.
+    """
+    from datetime import datetime
+    try:
+        from shared.presupuesto import render
+    except ImportError as e:
+        return {"ok": False, "error": f"falta Pillow en el python del MCP: {e} (pip install pillow)"}
+    filas = []
+    for it in items or []:
+        try:
+            filas.append((str(it.get("descripcion", "")).strip(), str(it.get("marca", "")).strip(),
+                          float(it.get("precio"))))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"precio inválido en {it}"}
+    if not filas:
+        return {"ok": False, "error": "sin items"}
+    salida = Path(os.environ.get("MP_OUTBOX", r"C:\MasterPartesBot\outbox"))
+    salida.mkdir(parents=True, exist_ok=True)
+    num = numero or datetime.now().strftime("%m%d%H%M")
+    ruta = salida / f"presupuesto_{num}.png"
+    render(filas, str(ruta), CLIENTE=cliente, VEHICULO=vehiculo,
+           NUMERO_PRESUPUESTO=num, MONEDA=moneda)
+    return {"ok": True, "imagen": str(ruta)}
+
+
 if __name__ == "__main__":
     mcp.run()
