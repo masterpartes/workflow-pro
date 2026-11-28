@@ -33,7 +33,7 @@ Liberar a Alejandro (trabaja en oficina; Master Partes solo temprano y de noche)
 |---|---|---|
 | 0 | Limpieza: commit, 009, retirar legado, rotar Inpart | parcial (010 hecho; 009 sin aplicar; legado y rotación pendientes) |
 | 1 | Tabla única + página Líneas + vistas + import pendientes | código y base LISTOS; **import pendiente (Alejandro)** |
-| 2 | Agente de Santiago: carpeta `C:\MasterPartesBot\agente`, carril en el relay, cola, imagen cliente | código LISTO; **setup de laptop y prueba pendientes** |
+| 2 | Agente de Santiago (REDISEÑO 28-nov: pipeline + IA mínima, ver Estado): carpeta `C:\MasterPartesBot\agente`, carril en el relay, cola, imagen cliente | código LISTO; **setup de laptop y prueba pendientes** |
 | 3 | Workers: userscript con AVK + PartSouq catálogo + PartSouq precio/stock/peso; latidos y alertas | código LISTO 28-nov (tools `catalogo_partsouq`, `precio_partsouq`; alertas en el relay); **falta instalar Tampermonkey + userscript y probar** |
 | 4 | Guardar líneas de cotización (de Alejandro y de Santiago) + precio ofertado/adjudicado | pendiente |
 | 5 | Adjudicación por captura → filas de pedido; despacho Panatlantic (tabla + Word facturas) | pendiente |
@@ -67,6 +67,19 @@ Liberar a Alejandro (trabaja en oficina; Master Partes solo temprano y de noche)
   userscript v2 solo arranca en pestañas `#mpworker` (las abre MODO_REMOTO) y no en iframes;
   relay avisa por Telegram si un worker pasa 3 min sin latido (relay_config "alertas" o el 1er usuario).
   Envío (shipping) de PartSouq NO incluido: requiere manipular el carrito; queda para después.
+- 28-nov 17:45: workers vivos (Tampermonkey + userscript v3). PartSouq rediseñó el catálogo en
+  nov → worker reescrito (VIN → entradas → vehículo → subgrupo → diagrama; probado: 3 piezas en 12 s).
+  Costo por pedido: 0.62 → 0.47 → 0.30 USD (7 turnos, 30 s). Piso ≈ 0.25–0.30 por corrida (prompt de
+  Claude Code + herramientas de Chrome se escriben en caché en cada corrida nueva; si hay otra
+  corrida dentro de 1 h se reusa). Pedidos con varias piezas reparten ese piso.
+- 28-nov 18:08: DECISIÓN DE COSTO (medido en la laptop). `claude -p` normal arrastra ~93.000 tokens
+  de arranque (≈1.9 ¢ en Haiku solo por arrancar; el agente con Chrome ≈ 25–30 ¢ de piso). Con
+  `--system-prompt "…" --tools "" --strict-mcp-config --disable-slash-commands --setting-sources local`
+  desde una carpeta vacía (C:\MasterPartesBot\vacio): 626 tokens, 0.013 ¢. → REDISEÑO del carril de
+  Santiago: PIPELINE en código (correo por IMAP, workers PartSouq + tascaparts/oempartsonline,
+  quote_list, formato fijo) + 1–2 llamadas mínimas de IA (leer captura con imagen por stream-json;
+  emparejar pieza↔diagrama). Objetivo ≈ 1 ¢ por pedido. El agente completo queda para Alejandro y
+  como último recurso. Pendiente decisión de Alejandro: Partslink24 (europeos).
 - 28-nov: verificado: 0 líneas importadas; el agente nunca corrió (no hay `agente\historial`);
   bot sin uso desde 18-oct; workers AVK/catálogo sin latido desde 28/29-oct.
 

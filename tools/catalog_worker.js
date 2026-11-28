@@ -511,7 +511,7 @@
     if (!vivo) return;
     latido(hechos + " ok / " + fallos + " err");
     if (ocupado) { setTimeout(vuelta, POLL_MS); return; }
-    rest("catalog_job?status=eq.pending&order=created_at.asc&limit=1")
+    rest("catalog_job?status=eq.pending&vin=not.like.PL24*&order=created_at.asc&limit=1")
       .then(function (r) { return r.json(); })
       .then(function (jobs) {
         if (!jobs || !jobs.length) return;

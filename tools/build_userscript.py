@@ -8,7 +8,7 @@ duplican), les mete SUPABASE_URL/ANON_KEY de .env y escribe
 masterpartes_worker.user.js en la raiz. Lleva credenciales: va en .gitignore.
 
 Uso:  python tools/build_userscript.py
-partslink24 queda FUERA a proposito: sus terminos no autorizan automatizar.
+Partslink24: incluido el 28-nov-2026 por decision del dueno (su cuenta, su pestana con sesion).
 """
 import re
 from pathlib import Path
@@ -18,6 +18,7 @@ OUT = REPO / "masterpartes_worker.user.js"
 WORKERS = [
     ("avk", "tools/avk_worker.js", r"avkparts"),
     ("catalog", "tools/catalog_worker.js", r"partsouq"),
+    ("pl24", "tools/pl24_worker.js", r"partslink24"),
 ]
 
 
@@ -45,14 +46,15 @@ def main():
         )
     cab = (
         "// ==UserScript==\n"
-        "// @name         Master Partes workers (AVK + PartSouq)\n"
+        "// @name         Master Partes workers (AVK + PartSouq + Partslink24)\n"
         "// @namespace    masterpartes\n"
-        "// @version      3\n"
+        "// @version      4\n"
         "// @description  Un solo worker: elige AVK o PartSouq segun la pagina y arranca solo.\n"
         "// @match        https://avkparts.lt/*\n"
         "// @match        https://www.avkparts.lt/*\n"
         "// @match        https://partsouq.com/*\n"
         "// @match        https://www.partsouq.com/*\n"
+        "// @match        https://www.partslink24.com/*\n"
         "// @run-at       document-idle\n"
         "// @noframes\n"
         "// @grant        none\n"

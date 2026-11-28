@@ -79,9 +79,9 @@ def _headers() -> dict:
             "Content-Type": "application/json", "Accept": "application/json"}
 
 
-async def worker_vivo(client: httpx.AsyncClient) -> tuple[bool, Optional[str]]:
+async def worker_vivo(client: httpx.AsyncClient, wid: int = 1) -> tuple[bool, Optional[str]]:
     r = await client.get(f"{SUPABASE_URL}/rest/v1/catalog_worker",
-                         params={"select": "last_seen,note", "id": "eq.1", "limit": "1"})
+                         params={"select": "last_seen,note", "id": f"eq.{wid}", "limit": "1"})
     if r.status_code != 200 or not r.json():
         return False, "no se pudo leer catalog_worker (¿falta aplicar la migracion 008?)"
     visto = datetime.fromisoformat(r.json()[0]["last_seen"].replace("Z", "+00:00"))
@@ -133,13 +133,17 @@ async def buscar_catalogo(vin: str, descripciones: list[str], espera_s: int = ES
         return {"ok": False, "error": f"sin respuesta del worker en {espera_s} s"}
 
 
-async def _encolar_y_esperar(fila: dict, espera_s: int) -> dict:
+async def _encolar_y_esperar(fila: dict, espera_s: int, wid: int = 1) -> dict:
     """Encola una fila en catalog_job y espera al worker. {"ok", "resultado"|"error", "worker_caido"}"""
+    nombre = "Partslink24" if wid == 2 else "PartSouq"
     async with httpx.AsyncClient(headers=_headers(), timeout=20.0) as client:
-        vivo, nota = await worker_vivo(client)
+        vivo, nota = await worker_vivo(client, wid)
         if not vivo:
             return {"ok": False, "worker_caido": True,
-                    "error": f"worker de PartSouq apagado ({nota or 'sin latido'})"}
+                    "error": f"worker de {nombre} apagado ({nota or 'sin latido'})"}
+        if wid == 2 and nota and "DEMO" in nota:
+            return {"ok": False, "sin_sesion": True,
+                    "error": "Partslink24 sin sesión: Alejandro tiene que iniciar sesión en la ventana de trabajo"}
         r = await client.post(f"{SUPABASE_URL}/rest/v1/catalog_job", json=[fila],
                               headers={**_headers(), "Prefer": "return=representation"})
         if r.status_code not in (200, 201):
@@ -201,6 +205,46 @@ async def catalogo_crudo(vin: str, descripciones: list[str], espera_s: int = ESP
             "pedidos": [{"descripcion": p["descripcion"], "estado": p["estado"],
                          "diagramas": p.get("diagramas")} for p in res.get("pedidos") or []],
             "diagramas": diags, "grupos_sin_mapa": res.get("grupos")}
+
+
+# ── Partslink24 (worker en la pestaña del dueño) ─────────────────────────────
+
+# WMI -> servicio de Partslink24. Verificados: skoda. Del skill: renault, peugeot. El resto, por patrón.
+PL24_WMI = {
+    "TMB": "skoda_parts", "TMP": "skoda_parts",
+    "WVW": "vw_parts", "WV1": "vw_parts", "WV2": "vw_parts", "WVG": "vw_parts", "9BW": "vw_parts",
+    "3VW": "vw_parts", "8AW": "vw_parts", "1VW": "vw_parts",
+    "WAU": "audi_parts", "WA1": "audi_parts", "TRU": "audi_parts", "WUA": "audi_parts",
+    "VSS": "seat_parts",
+    "VF3": "peugeot_parts", "VR3": "peugeot_parts", "8AD": "peugeot_parts", "936": "peugeot_parts",
+    "VF7": "citroen_parts", "VR7": "citroen_parts", "935": "citroen_parts", "8BC": "citroen_parts",
+    "VF1": "renault_parts", "93Y": "renault_parts", "VF6": "renault_parts", "UU1": "dacia_parts",
+    "WBA": "bmw_parts", "WBS": "bmw_parts", "WBX": "bmw_parts", "WMW": "mini_parts",
+}
+
+
+def servicio_pl24(vin: str) -> str:
+    return PL24_WMI.get((vin or "")[:3].upper(), "")
+
+
+async def partslink_crudo(vin: str, piezas: list[dict], servicio: str = "", espera_s: int = 240) -> dict:
+    """piezas = [{"desc": "parabrisas", "en": "windscreen"}]. Devuelve hits y láminas en texto."""
+    v = normalizar_vin(vin)
+    if not v:
+        return {"ok": False, "error": "VIN invalido"}
+    serv = servicio or servicio_pl24(v)
+    if not serv:
+        return {"ok": False, "error": f"no sé qué catálogo de Partslink24 corresponde al VIN {v[:3]}…"}
+    terms = []
+    for p in piezas or []:
+        desc = re.sub(r"[\x00-\x1f\x7f]", " ", str(p.get("desc", ""))).strip()[:MAX_DESC_LEN]
+        en = re.sub(r"[^\w\s,\-]", " ", str(p.get("en", ""))).strip()[:60]
+        if desc or en:
+            terms.append({"desc": desc, "en": en})
+    if not terms:
+        return {"ok": False, "error": "sin piezas"}
+    return await _encolar_y_esperar({"vin": "PL24:" + v, "descripciones": {"servicio": serv, "terminos": terms[:12]}},
+                                    espera_s, wid=2)
 
 
 # ── Emparejado (una llamada chica de IA) ─────────────────────────────────────

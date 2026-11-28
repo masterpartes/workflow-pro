@@ -1052,6 +1052,29 @@ async def catalogo_partsouq(vin: str, descripciones: list[str]) -> dict:
 
 
 @mcp.tool()
+async def catalogo_partslink24(vin: str, piezas: list[dict], servicio: str = "") -> dict:
+    """
+    PARTSLINK24 POR VIN, en UNA llamada (lo lee el worker en la pestaña de Partslink24 del dueño,
+    con su sesión). Para europeos: Skoda, VW, Audi, Seat, Peugeot, Citroën, Renault, Dacia, BMW, Mini.
+    Por pieza devuelve los resultados de la búsqueda filtrada por VIN (número, descripción con fechas
+    y variantes, grupo, ilustración) y, para el grupo VW, el texto de la lámina con todas las variantes.
+    Vos elegís el número correcto (fechas de producción del VIN, equipamiento, restricciones).
+
+    Args:
+        vin: 17 caracteres.
+        piezas: [{"desc": "parabrisas", "en": "windscreen"}, {"desc": "caucho parabrisas",
+                 "en": "windscreen seal"}]. `en` = término de búsqueda en inglés del catálogo.
+        servicio: opcional ("skoda_parts"…); vacío = se deduce del VIN.
+    Si responde sin_sesion: Partslink24 cerrado → avisar "necesita a Alejandro".
+    """
+    from catalog_live import partslink_crudo
+    try:
+        return await partslink_crudo(vin, piezas, servicio)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
 async def precio_partsouq(numeros: list[str]) -> dict:
     """
     PRECIO, STOCK Y PESO EN PARTSOUQ por número de parte, en UNA llamada (lo lee el worker en
