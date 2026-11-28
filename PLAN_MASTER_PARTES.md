@@ -80,6 +80,13 @@ Liberar a Alejandro (trabaja en oficina; Master Partes solo temprano y de noche)
   quote_list, formato fijo) + 1–2 llamadas mínimas de IA (leer captura con imagen por stream-json;
   emparejar pieza↔diagrama). Objetivo ≈ 1 ¢ por pedido. El agente completo queda para Alejandro y
   como último recurso. Pendiente decisión de Alejandro: Partslink24 (europeos).
+- 28-nov 18:40: Partslink24 worker (userscript v5, latido id=2, alerta DEMO, recarga c/10 min) devolvió
+  6VA 845 011 K NVB en 16 s. Corrida por Telegram cortada: "5-hour limit / out of usage credits" (esta
+  sesión de construcción en Opus consume la misma cuota). REFERENCIA DE CALIDAD (corrida de escritorio
+  con skills, 30 acciones): parabrisas 6VA845011K NVB €229.74 AVK 13.95 kg; "caucho" = 6VA823723 €4.17
+  ⚠ (vidrio pegado; adhesivo D 169 300 M2 + primer D 009 200 02); sin alterno en AVK; Caso Exprés.
+  El pipeline tiene que llegar a esto. PRÓXIMO: pipeline (llamadas mínimas: leer captura, emparejar con
+  texto de lámina) + AVK precio por número; sesiones de construcción cortas.
 - 28-nov: verificado: 0 líneas importadas; el agente nunca corrió (no hay `agente\historial`);
   bot sin uso desde 18-oct; workers AVK/catálogo sin latido desde 28/29-oct.
 
@@ -89,3 +96,38 @@ Liberar a Alejandro (trabaja en oficina; Master Partes solo temprano y de noche)
 - `C:\MasterPartesBot\agente\` (CLAUDE.md, .claude\skills, settings), `relay\telegram_relay.py`
 - `workflow-pro\INVENTARIO_2026-11-25.md` (qué fuentes existen y dónde)
 - `PUBLICAR.bat` (push → Vercel; el push solo funciona desde la laptop)
+
+
+## PRÓXIMA SESIÓN — empezar acá (escrito 28-nov 19:50)
+
+**Objetivo:** pipeline del carril de Santiago a ~1 ¢ por pedido, con la calidad de la corrida de escritorio
+(ver Estado 28-nov 18:40). El agente completo (`claude -p --chrome`) queda solo como último recurso.
+
+**Piezas a construir (en este orden, probando cada una):**
+1. `relay/ia_min.py` — `llamar(prompt, imagen=None, modelo="haiku")`: `claude -p` desde
+   `C:\MasterPartesBot\vacio` con `--system-prompt <corto> --tools "" --strict-mcp-config
+   --disable-slash-commands --setting-sources local --output-format json`; imagen vía
+   `--input-format stream-json` (mensaje user con bloque image base64). Medido: 626 tokens de arranque.
+2. `leer_pedido(texto|imagen)` → JSON estricto {vin, marca, cliente, clave, cierre, caso_expres,
+   piezas:[{texto, cant, numero?, en}]} (`en` = término de catálogo en inglés). SIPO por IMAP sin IA
+   después (paso 6).
+3. Ruteo por VIN (WMI): PartSouq (`catalog_live.catalogo_crudo`), Partslink24 (`partslink_crudo`),
+   EE.UU. (paso 5). Workers ya existen y andan (userscript v5).
+4. `emparejar(pieza, texto_diagramas)` (Sonnet, sin herramientas) → {numero, confianza, nota ⚠};
+   validar que el número exista en el texto leído. Precios: `precios_partsouq`, AVK
+   (`avk_live.lookup_avk`, devuelve € y peso), `quote_list`/`quote_quito_cost`; tabla con formato fijo
+   (CLAUDE.md del agente §3) armada en código. Integrar en `telegram_relay.py` como carril 3a;
+   el agente completo pasa a `/agente <pedido>`.
+5. Worker tascaparts / oempartsonline (mismo patrón; plataforma RevolutionParts) para Ford US, Honda,
+   GM, Mopar, BMW/VW US.
+6. SIPO por IMAP + `reglas_subastas.json` → "subastas" sin IA para leer.
+
+**Pruebas de referencia:** Montero MMBGUKS50PH001101 faro derecho → 8301D438 (PSQ $1423.73 sin stock,
+reemplazo 26010W570P). Skoda TMBEC4PJ7S4006022 parabrisas → 6VA845011K NVB (AVK €229.74, 13.95 kg),
+"caucho" → 6VA823723 ⚠.
+
+**Mañas del entorno:** `device_commit_files` a veces tarda en verse en la VM: verificar con grep antes de
+construir/commitear. Git en la VM deja `.lock`: moverlos a `.git/stale-*`. La VM no puede hacer push:
+`PUBLICAR.bat`. Los workers se actualizan reconstruyendo (`python tools/build_userscript.py`) y
+reimportando en Tampermonkey (subir `@version`). 409 en el bot = otra instancia: terminar python.exe /
+claude.exe. Sesiones de construcción en Sonnet y cortas (la cuota es la misma del plan Pro).
