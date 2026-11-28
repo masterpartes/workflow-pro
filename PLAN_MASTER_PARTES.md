@@ -98,42 +98,65 @@ Liberar a Alejandro (trabaja en oficina; Master Partes solo temprano y de noche)
 - `PUBLICAR.bat` (push → Vercel; el push solo funciona desde la laptop)
 
 
-## PRÓXIMA SESIÓN — empezar acá (escrito 28-nov 19:50)
+## PRÓXIMA SESIÓN — empezar acá (reescrito 28-nov 20:30)
 
-**Objetivo:** pipeline del carril de Santiago a ~1 ¢ por pedido, con la calidad de la corrida de escritorio
-(ver Estado 28-nov 18:40). El agente completo (`claude -p --chrome`) queda solo como último recurso.
+**Objetivo:** carril remoto de Santiago alineado con el proceso de escritorio de Alejandro. NO tocar la
+skill `masterpartes-cotizacion` ni el proceso de escritorio (Alejandro filtra SIPO, pasa el link de la
+carpeta, el agente cotiza ~10 subastas en ~10 min: eso queda igual). Cualquier cambio a una skill = mostrar
+el diff y esperar el OK. Escala real: 10+ subastas de 20+ piezas por día (100+ piezas).
 
-**Piezas a construir (en este orden, probando cada una):**
-1. `relay/ia_min.py` — `llamar(prompt, imagen=None, modelo="haiku")`: `claude -p` desde
-   `C:\MasterPartesBot\vacio` con `--system-prompt <corto> --tools "" --strict-mcp-config
-   --disable-slash-commands --setting-sources local --output-format json`; imagen vía
-   `--input-format stream-json` (mensaje user con bloque image base64). Medido: 626 tokens de arranque.
-2. `leer_pedido(texto|imagen)` → JSON estricto {vin, marca, cliente, clave, cierre, caso_expres,
-   piezas:[{texto, cant, numero?, en}]} (`en` = término de catálogo en inglés). SIPO por IMAP sin IA
-   después (paso 6).
-3. Ruteo por VIN (WMI): PartSouq (`catalog_live.catalogo_crudo`), Partslink24 (`partslink_crudo`),
-   EE.UU. (paso 5). Workers ya existen y andan (userscript v5).
-4. `emparejar(pieza, texto_diagramas)` (Sonnet, sin herramientas) → {numero, confianza, nota ⚠};
-   validar que el número exista en el texto leído. Precios: `precios_partsouq`, AVK
-   (`avk_live.lookup_avk`, devuelve € y peso), `quote_list`/`quote_quito_cost`; tabla con formato fijo
-   (CLAUDE.md del agente §3) armada en código. Integrar en `telegram_relay.py` como carril 3a;
-   el agente completo pasa a `/agente <pedido>`.
-5. Worker tascaparts / oempartsonline (mismo patrón; plataforma RevolutionParts) para Ford US, Honda,
-   GM, Mopar, BMW/VW US.
-6. SIPO por IMAP + `reglas_subastas.json` → "subastas" sin IA para leer.
+**Diseño acordado:** motor en código (`C:\MasterPartesBot\relay\pipeline.py`) con la SUBASTA como unidad:
+1 lectura del pedido (Haiku) → catálogo por VIN (worker) → 1 emparejado por subasta (Sonnet, solo el texto de
+lámina relevante) → precios en lote (PartSouq / AVK bulk / eBay API en paralelo) → tabla. Las líneas con ⚠
+(variantes, PR, pieza "más cercana" como el caucho del Skoda) pasan al agente completo con las skills. Nada se
+descarta: lo difícil va por la vía lenta o "⚠ necesita a Alejandro".
 
-**Pruebas de referencia:** Montero MMBGUKS50PH001101 faro derecho → 8301D438 (PSQ $1423.73 sin stock,
-reemplazo 26010W570P). Skoda TMBEC4PJ7S4006022 parabrisas → 6VA845011K NVB (AVK €229.74, 13.95 kg),
-"caucho" → 6VA823723 ⚠.
+**Hecho (28-nov, Sonnet/Opus):** `relay\ia_min.py` (llamada mínima, imagen por stream-json), `relay\pipeline.py`
+(leer → ruteo WMI PartSouq/Partslink24 → emparejar con validación del número contra el texto → precios
+PartSouq o AVK + eBay `ebay_service.search_part` en paralelo, regla eBay genuino < 40 % → ⚠ → costo Quito con
+`quote_quito_cost` → tabla §3), `relay\test_pipeline.py` (simulado), `PROBAR_PIPELINE.bat` (Montero + Skoda,
+o arrastrar una captura encima), carril en `telegram_relay.py` (`correr_pedido`, `/agente <pedido>` fuerza el
+agente; backup `.bak-2026-11-28`). **Carril APAGADO**: se prende con `"pipeline": true` en `relay_config.json`.
 
-**Mañas del entorno:** `device_commit_files` a veces tarda en verse en la VM: verificar con grep antes de
-construir/commitear. Git en la VM deja `.lock`: moverlos a `.git/stale-*`. La VM no puede hacer push:
-`PUBLICAR.bat`. Los workers se actualizan reconstruyendo (`python tools/build_userscript.py`) y
-reimportando en Tampermonkey (subir `@version`). 409 en el bot = otra instancia: terminar python.exe /
-claude.exe. Sesiones de construcción en Sonnet y cortas (la cuota es la misma del plan Pro).
+**Medido en la laptop:** IA 0.1–0.8 ¢ por pedido corto (Skoda 3.8 ¢: demasiado texto de Partslink24 al
+emparejar). Etapas: leer 2.5 s, emparejar 2–6 s, precios 4–13 s, catálogo 15–24 s… pero 127 s cuando la
+pestaña del worker estuvo en segundo plano (Chrome frena timers de pestañas ocultas a ~1/min).
+Montero OK (8301D438, reemplazo 26010W570P, sin stock; eBay genuino $430 rechazado por la regla del 40 %).
+Skoda: número 6VA 845 011 K NVB OK; AVK no lo encuentra con NVB → arreglado (busca también 6VA845011K),
+SIN PROBAR en la laptop; caucho sin número (correcto que vaya ⚠ al agente: en escritorio fue juicio, vidrio
+pegado → 6VA823723 sello del panel frontal + adhesivo D 169 300 M2 + primer D 009 200 02).
 
-**Avance 28-nov noche (sesión Sonnet):** piezas 1–4 en código en `C:\MasterPartesBot\relay\` (`ia_min.py`,
-`pipeline.py`, `test_pipeline.py`; relay con backup `.bak-2026-11-28`). Probado SOLO con IA y catálogos
-simulados. Carril APAGADO hasta probar en la laptop con `C:\MasterPartesBot\PROBAR_PIPELINE.bat`; se prende
-con `"pipeline": true` en `relay_config.json`. `/agente <pedido>` fuerza el agente completo.
-Faltan piezas 5 y 6, y alterno eBay cuando PartSouq no tiene.
+**Pendiente, en este orden (probar cada uno con PROBAR_PIPELINE.bat antes del siguiente):**
+1. **Chrome dedicado para los workers** (Alejandro DIJO QUE SÍ): `MODO_REMOTO.bat` abre un Chrome aparte con
+   `--user-data-dir=C:\MasterPartesBot\chrome_trabajo --disable-background-timer-throttling
+   --disable-renderer-backgrounding --disable-backgrounding-occluded-windows` y las pestañas `#mpworker`.
+   Alejandro inicia sesión UNA vez en ese perfil (Partslink24, AVK, correo, Telegram web) e instala ahí
+   Tampermonkey + `masterpartes_worker.user.js` (y la extensión de Claude in Chrome si el agente la usa ahí;
+   verificar que `claude --chrome` se conecte a ese perfil, si no, decidir con él). Correr el .bat dos
+   veces con 10 min de diferencia: catálogo Skoda debe quedar < 30 s las dos.
+2. **Verificar AVK en la laptop**: Skoda debe dar parabrisas €229.74. Revisar clasificación genuino/alterno
+   (corrida anterior dio €300.87 "genuino" y €229.74 "alterno"; escritorio: €229.74 genuino, sin alterno):
+   mirar las ofertas en `avk_job` (Supabase, id ≥ 245: provider, calidad) y corregir `tools/avk_worker.js`.
+   OJO: el shell de la VM no llega a Supabase; usar la tool MCP `db_select` o la laptop.
+3. **AVK bulk en el worker**: hoy una página por número. Copiar el método de `avk_bookmarklets.html`
+   (modal "Bulk parts search": textarea con un número por línea → botón search → resultados en
+   `.bulk_single_item` / `.single_bulk_code` / `.item` `.column_provider` `.column_price_no_tax`). En la
+   pestaña de AVK (Cloudflare pasado) mirar con Claude in Chrome qué request hace el bulk (read_network_requests)
+   para hacerlo por fetch; si no, manejar el modal desde el worker. Genuino/alterno en bulk = por código de
+   proveedor (lista GENUINO del worker: VAG, PSA, BMW…), validar contra una búsqueda individual.
+   `avk_live.lookup_avk` mandar UN job con todos los números.
+4. **Catálogo por subasta**: una lectura por VIN para todas las piezas; láminas compartidas una sola vez;
+   al emparejar mandar solo las láminas relevantes (recortar texto → baja el 3.8 ¢). Partslink24 es una sola
+   sesión: secuencial.
+5. **Prueba de 20 piezas**: Alejandro elige una subasta ya cotizada en escritorio (con su resultado) →
+   correrla por el pipeline y comparar línea por línea (número, precio, ⚠). Medir tiempo y costo.
+6. **Vía ⚠ al agente**: las líneas ⚠ del pipeline van a `correr_agente` con el contexto ya resuelto (VIN,
+   vehículo, números hallados, solo las piezas ⚠), respuesta fusionada en una tabla.
+7. Después: worker tascaparts / oempartsonline (Ford US, Honda, GM, Mopar) y prender el carril
+   (`"pipeline": true`). SIPO por IMAP queda para Santiago únicamente (no para el escritorio).
+
+**Mañas del entorno:** `device_commit_files` a veces tarda en verse en la VM: verificar con grep. Git en la VM
+deja `.lock`: moverlos a `.git/stale-*` (borrar no está permitido sin pedir permiso). La VM no hace push:
+`PUBLICAR.bat`. Workers: `python tools/build_userscript.py` y reimportar en Tampermonkey (subir `@version`).
+409 en el bot = otra instancia: terminar python.exe / claude.exe. El shell de la VM no llega a Supabase.
+Sesiones de construcción cortas (misma cuota del plan).
