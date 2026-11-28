@@ -91,14 +91,29 @@
                            function (x) { return /Search:/.test(x) && (/Part no\./.test(x) || /No hits|no results/i.test(x)); });
         res.hits = hits(t);
         if (VWAG[servicio]) {
+          // láminas de los hits que más se parecen al término (no las primeras de la lista)
+          var pal = tq.toLowerCase().split(/[\s,]+/).filter(function (w) { return w.length > 2; });
+          var puntuar = function (h) {
+            var d = h.descripcion.toLowerCase(), sc = 0;
+            pal.forEach(function (w, i) { if (d.indexOf(w) >= 0) sc += (d.indexOf(w) < 15 ? 3 : 1) * (i === 0 ? 2 : 1); });
+            ["cleaner", "cleaning", "solution", "washer", "pump", "wiper", "holder", "housing", "hose",
+             "contact", "grease", "adhesive", "clip", "screw", "bolt", "bracket", "grommet"].forEach(function (w) {
+              if (d.indexOf(w) >= 0 && tq.toLowerCase().indexOf(w) < 0) sc -= 3;
+            });
+            return sc;
+          };
           var ilus = [];
-          res.hits.forEach(function (h) {
-            if (h.ilustracion && ilus.indexOf(h.ilustracion + "|" + h.mg) < 0) ilus.push(h.ilustracion + "|" + h.mg);
+          res.hits.slice().sort(function (a, b) { return puntuar(b) - puntuar(a); }).forEach(function (h) {
+            if (puntuar(h) > 0 && h.ilustracion && ilus.indexOf(h.ilustracion + "|" + h.mg) < 0)
+              ilus.push(h.ilustracion + "|" + h.mg);
           });
           for (var u = 0; u < Math.min(ilus.length, 2); u++) {
             var p = ilus[u].split("|");
             if (!laminasLeidas[ilus[u]]) {
-              var tl = await leer(urlLamina(servicio, vin, p[0], p[1]), function (x) { return /Pos\.\s*\nPart no\./.test(x); });
+              var tl = await leer(urlLamina(servicio, vin, p[0], p[1]), function (x) {
+                var i = x.indexOf("Pos.");      // listo cuando ya hay filas con números de parte
+                return i >= 0 && /\b[0-9A-Z]{3} [0-9]{3} [0-9]{3}/.test(x.slice(i));
+              });
               var i0 = tl.indexOf(p[0]);
               laminasLeidas[ilus[u]] = txt(tl.slice(i0 >= 0 ? i0 : 0)).slice(0, 4000);
             }
