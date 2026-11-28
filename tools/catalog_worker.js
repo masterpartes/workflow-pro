@@ -283,10 +283,95 @@
                ? grupos.map(function (g) { return g.nombre; }) : undefined };
   }
 
+  /* ------------- precios: numero de parte -> precio, stock, peso -------------
+   * Trabajo tipo "precio" (28-nov-2026): job.numeros = ["8301D438", ...].
+   * Lee la pagina de busqueda de cada numero (fetch mismo-origen; si Cloudflare,
+   * iframe) y devuelve por numero: ofertas [{nombre, precio, stock, peso_kg, marca,
+   * origen}], la mas barata con stock y la mas barata en general. */
+  var NUM_RE = /^[A-Z0-9-]{4,20}$/;
+  // marca de la oferta = fabricante del vehiculo -> genuino; cualquier otra (SANKEI, DEPO...) -> alterno
+  var FABRICANTES = /^(toyota|lexus|nissan|infiniti|mitsubishi|mazda|honda|acura|hyundai|kia|subaru|suzuki|isuzu|daihatsu|ford|gm|chevrolet|mopar|chrysler|jeep|volkswagen|vw|audi|bmw|mini|mercedes|mercedes-benz|porsche|volvo|land rover|jaguar|peugeot|citroen|renault|genesis|ssangyong)\b/i;
+  function parsePrecios(doc, numero) {
+    var limpio = numero.replace(/[^A-Z0-9]/g, "");
+    return Array.prototype.map.call(doc.querySelectorAll(".search-product-card"), function (c) {
+      var campos = {};
+      Array.prototype.forEach.call(c.querySelectorAll(".search-product-card-info-item"), function (it) {
+        var k = txt(it.querySelector(".search-product-card-info-label")).toLowerCase();
+        if (k) campos[k] = txt(it.querySelector(".search-product-card-info-value"));
+      });
+      var pm = txt(c.querySelector(".search-product-price")).replace(/,/g, "").match(/([\d.]+)\s*\$/);
+      var peso = null;
+      Object.keys(campos).forEach(function (k) {
+        if (/weight/.test(k)) { var w = parseFloat(campos[k]); if (w > 0) peso = w; }
+      });
+      var stock = parseInt(campos["availability"], 10);
+      return {
+        nombre: txt(c.querySelector("h1, h2, h3, h4")),
+        numero: (campos["part number"] || "").replace(/[^A-Z0-9]/gi, "").toUpperCase(),
+        precio: pm ? parseFloat(pm[1]) : null,
+        stock: isNaN(stock) ? null : stock,
+        peso_kg: peso,
+        marca: campos["make"] || null,
+        origen: campos["made in"] || null
+      };
+    }).filter(function (o) { return o.precio != null && (!o.numero || o.numero === limpio); });
+  }
+
+  async function procesarPrecios(job) {
+    var nums = (job.numeros || []).map(function (n) {
+      return String(n || "").toUpperCase().replace(/\s+/g, "");
+    }).filter(function (n) { return NUM_RE.test(n); }).slice(0, 25);
+    if (!nums.length) throw new Error("sin_numeros");
+    var out = [];
+    for (var i = 0; i < nums.length; i++) {
+      try { pintar("precio " + (i + 1) + "/" + nums.length + " " + nums[i]); } catch (e) {}
+      var r = await cargarBusqueda("/en/search/all?q=" + encodeURIComponent(nums[i].replace(/-/g, "")));
+      var ofertas = parsePrecios(r.doc, nums[i]).sort(function (a, b) { return a.precio - b.precio; });
+      ofertas.forEach(function (o) { o.genuino = FABRICANTES.test(o.marca || ""); });
+      var elegir = function (lista) {       // la mas barata con stock; si ninguna tiene, la mas barata
+        return lista.filter(function (o) { return o.stock > 0; })[0] || lista[0] || null;
+      };
+      out.push({ numero: nums[i], encontrado: ofertas.length > 0,
+                 genuino: elegir(ofertas.filter(function (o) { return o.genuino; })),
+                 alterno: elegir(ofertas.filter(function (o) { return !o.genuino; })),
+                 ofertas: ofertas.slice(0, 6) });
+    }
+    return { fuente: "PartSouq", tipo: "precio", moneda: "USD", resultados: out };
+  }
+
+  function cargarBusqueda(url) {      // la busqueda no tiene .part-catalog-*: otra condicion de "listo"
+    return viaFetch(url).then(function (r) {
+      if (r) return r;
+      return new Promise(function (ok) {
+        var f = document.createElement("iframe");
+        f.style.cssText = "position:fixed;left:-3000px;top:0;width:1000px;height:800px;";
+        f.src = url;
+        var t0 = Date.now();
+        var iv = setInterval(function () {
+          var d = null;
+          try { d = f.contentDocument; } catch (e) {}
+          var listo = d && d.readyState === "complete" && !desafio(d) &&
+                      (d.querySelector(".search-product-card") || /search result/i.test(d.title || ""));
+          if (listo || Date.now() - t0 > ESPERA_CARGA_MS) {
+            clearInterval(iv);
+            var res = listo ? { doc: new DOMParser().parseFromString(d.documentElement.outerHTML, "text/html"),
+                                url: url } : null;
+            f.remove(); ok(res);
+          }
+        }, 300);
+        document.body.appendChild(f);
+      });
+    }).then(function (r) {
+      if (!r) throw new Error("cloudflare_challenge");
+      return esperar(PAUSA_MS).then(function () { return r; });
+    });
+  }
+
   /* ---- Gancho de prueba: expone parsers sin arrancar la cola ---- */
   if (window.__CATALOG_TEST__) {
     window.__catalogParsers = { parseGrupos: parseGrupos, parseTarjetas: parseTarjetas,
       parsePiezas: parsePiezas, parseVehiculo: parseVehiculo, siguiente: siguiente,
+      parsePrecios: parsePrecios, procesarPrecios: procesarPrecios,
       mapear: mapear, puntaje: puntaje, procesar: procesar };
     return;
   }
@@ -323,9 +408,13 @@
         if (!jobs || !jobs.length) return;
         var job = jobs[0];
         ocupado = true;
-        pintar("buscando " + job.vin);
+        // Trabajo de precios: vin = "PRECIO" y descripciones = {numeros: [...]} (sin migracion nueva)
+        var esPrecio = job.vin === "PRECIO";
+        pintar(esPrecio ? "precios" : "buscando " + job.vin);
         return marcar(job.id, { status: "working" })
-          .then(function () { return procesar(job); })
+          .then(function () {
+            return esPrecio ? procesarPrecios({ numeros: (job.descripciones || {}).numeros }) : procesar(job);
+          })
           .then(function (res) { hechos++; return marcar(job.id, { status: "done", result: res }); })
           .catch(function (e) {
             fallos++;

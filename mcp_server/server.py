@@ -1030,6 +1030,46 @@ async def buscar_numeros_vin(vin: str, descripciones: list[str], cliente: str = 
 
 
 @mcp.tool()
+async def catalogo_partsouq(vin: str, descripciones: list[str]) -> dict:
+    """
+    DIAGRAMAS DE PARTSOUQ PARA UN VIN, en UNA llamada (lo lee el worker en el Chrome del dueño,
+    sin navegar vos). Devuelve las piezas de los diagramas que corresponden a cada descripción;
+    el emparejado ("faro derecho" -> "HEADLAMP ASSY,RH") lo hacés vos con esa lista, respetando
+    la aplicabilidad (versión/mercado del VIN). Marcas: Toyota, Lexus, Nissan, Infiniti,
+    Mitsubishi, Mazda, Hyundai, Kia, Subaru (Honda parcial).
+
+    Si devuelve worker_caido o un pedido 'sin_mapa'/'sin_diagrama', recién ahí navegá el catálogo.
+
+    Args:
+        vin: 17 caracteres.
+        descripciones: ["faro derecho", "parachoque delantero", ...] (máx 12).
+    """
+    from catalog_live import catalogo_crudo
+    try:
+        return await catalogo_crudo(vin, descripciones)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
+async def precio_partsouq(numeros: list[str]) -> dict:
+    """
+    PRECIO, STOCK Y PESO EN PARTSOUQ por número de parte, en UNA llamada (lo lee el worker en
+    el Chrome del dueño). Por número devuelve `genuino` (marca del fabricante) y `alterno`
+    (otras marcas): la oferta más barata con stock, o la más barata si ninguna tiene stock.
+    Precios en USD, FOB (sin flete ni impuestos): pasalos a quote_quito_cost.
+
+    Args:
+        numeros: ["8301D438", "90915-YZZE1", ...] (máx 25).
+    """
+    from catalog_live import precios_partsouq
+    try:
+        return await precios_partsouq(numeros)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
 async def ebay_por_descripcion(piezas: list[str], year: str = "", make: str = "", model: str = "",
                                limite: int = 8) -> dict:
     """

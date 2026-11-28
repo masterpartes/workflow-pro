@@ -133,6 +133,76 @@ async def buscar_catalogo(vin: str, descripciones: list[str], espera_s: int = ES
         return {"ok": False, "error": f"sin respuesta del worker en {espera_s} s"}
 
 
+async def _encolar_y_esperar(fila: dict, espera_s: int) -> dict:
+    """Encola una fila en catalog_job y espera al worker. {"ok", "resultado"|"error", "worker_caido"}"""
+    async with httpx.AsyncClient(headers=_headers(), timeout=20.0) as client:
+        vivo, nota = await worker_vivo(client)
+        if not vivo:
+            return {"ok": False, "worker_caido": True,
+                    "error": f"worker de PartSouq apagado ({nota or 'sin latido'})"}
+        r = await client.post(f"{SUPABASE_URL}/rest/v1/catalog_job", json=[fila],
+                              headers={**_headers(), "Prefer": "return=representation"})
+        if r.status_code not in (200, 201):
+            return {"ok": False, "error": f"no se pudo encolar: {r.status_code}"}
+        job_id = r.json()[0]["id"]
+        limite = asyncio.get_event_loop().time() + espera_s
+        while asyncio.get_event_loop().time() < limite:
+            await asyncio.sleep(INTERVALO_S)
+            q = await client.get(f"{SUPABASE_URL}/rest/v1/catalog_job",
+                                 params={"select": "status,result,error", "id": f"eq.{job_id}"})
+            if q.status_code != 200 or not q.json():
+                continue
+            f = q.json()[0]
+            if f["status"] == "done":
+                return {"ok": True, "resultado": f["result"]}
+            if f["status"] == "error":
+                return {"ok": False, "error": f.get("error") or "error",
+                        "cloudflare": f.get("error") == "cloudflare_challenge"}
+        return {"ok": False, "error": f"sin respuesta del worker en {espera_s} s"}
+
+
+NUMERO_RE = re.compile(r"^[A-Z0-9-]{4,20}$")
+
+
+async def precios_partsouq(numeros: list[str], espera_s: int = 150) -> dict:
+    """Precio, stock y peso en PartSouq por numero, via el worker (sin IA, sin navegar)."""
+    nums = []
+    for n in numeros or []:
+        n = re.sub(r"\s+", "", str(n).upper())
+        if NUMERO_RE.fullmatch(n) and n not in nums:
+            nums.append(n)
+    if not nums:
+        return {"ok": False, "error": "sin numeros validos"}
+    return await _encolar_y_esperar({"vin": "PRECIO", "descripciones": {"numeros": nums[:25]}}, espera_s)
+
+
+async def catalogo_crudo(vin: str, descripciones: list[str], espera_s: int = ESPERA_S) -> dict:
+    """Diagramas de PartSouq para el VIN, SIN emparejar (lo empareja quien llama)."""
+    v = normalizar_vin(vin)
+    if not v:
+        return {"ok": False, "error": "VIN invalido (17 caracteres, sin I/O/Q)."}
+    descs = limpiar_descripciones(descripciones)
+    if not descs:
+        return {"ok": False, "error": "sin descripciones"}
+    r = await _encolar_y_esperar({"vin": v, "descripciones": descs}, espera_s)
+    if not r.get("ok"):
+        return r
+    res = r["resultado"] or {}
+    diags = []
+    for d in res.get("diagramas") or []:
+        piezas = []
+        for p in d.get("piezas") or []:
+            extra = " · ".join(x for x in (p.get("aplicabilidad"),
+                                           ("reemplazo " + p["reemplazo"]) if p.get("reemplazo") else None,
+                                           ("cant " + p["cantidad"]) if p.get("cantidad") else None) if x)
+            piezas.append(f"{p.get('numero')} · {p.get('descripcion') or ''}" + (f" · {extra}" if extra else ""))
+        diags.append({"diagrama": f"{d.get('grupo', '')} / {d.get('nombre', '')}", "piezas": piezas})
+    return {"ok": True, "vehiculo": res.get("vehiculo"),
+            "pedidos": [{"descripcion": p["descripcion"], "estado": p["estado"],
+                         "diagramas": p.get("diagramas")} for p in res.get("pedidos") or []],
+            "diagramas": diags, "grupos_sin_mapa": res.get("grupos")}
+
+
 # ── Emparejado (una llamada chica de IA) ─────────────────────────────────────
 
 def _entrada_para_ia(resultado: dict, descripciones: list[str]) -> list[dict]:
