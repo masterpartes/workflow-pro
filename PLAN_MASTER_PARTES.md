@@ -131,3 +131,9 @@ construir/commitear. Git en la VM deja `.lock`: moverlos a `.git/stale-*`. La VM
 `PUBLICAR.bat`. Los workers se actualizan reconstruyendo (`python tools/build_userscript.py`) y
 reimportando en Tampermonkey (subir `@version`). 409 en el bot = otra instancia: terminar python.exe /
 claude.exe. Sesiones de construcción en Sonnet y cortas (la cuota es la misma del plan Pro).
+
+**Avance 28-nov noche (sesión Sonnet):** piezas 1–4 en código en `C:\MasterPartesBot\relay\` (`ia_min.py`,
+`pipeline.py`, `test_pipeline.py`; relay con backup `.bak-2026-11-28`). Probado SOLO con IA y catálogos
+simulados. Carril APAGADO hasta probar en la laptop con `C:\MasterPartesBot\PROBAR_PIPELINE.bat`; se prende
+con `"pipeline": true` en `relay_config.json`. `/agente <pedido>` fuerza el agente completo.
+Faltan piezas 5 y 6, y alterno eBay cuando PartSouq no tiene.
