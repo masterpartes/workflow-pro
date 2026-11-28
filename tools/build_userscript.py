@@ -47,7 +47,7 @@ def main():
         "// ==UserScript==\n"
         "// @name         Master Partes workers (AVK + PartSouq)\n"
         "// @namespace    masterpartes\n"
-        "// @version      2\n"
+        "// @version      3\n"
         "// @description  Un solo worker: elige AVK o PartSouq segun la pagina y arranca solo.\n"
         "// @match        https://avkparts.lt/*\n"
         "// @match        https://www.avkparts.lt/*\n"

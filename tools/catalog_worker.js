@@ -248,7 +248,7 @@
 
     var r0 = await cargar("/en/search/all?q=" + encodeURIComponent(vin));
     var grupos = parseGrupos(r0.doc, r0.url);
-    if (!grupos.length) throw new Error("vin_sin_catalogo");
+    if (!grupos.length) return procesarNuevo(vin, descs);     // catalogo rediseñado (nov-2026)
     var vehiculo = parseVehiculo(r0.doc, r0.url);
 
     var cacheGrupos = {}, diagramas = [], idxPorUrl = {}, pedidos = [];
@@ -367,11 +367,120 @@
     });
   }
 
+  /* ------------- catalogo nuevo de PartSouq (rediseño nov-2026) -------------
+   * VIN -> /en/search/all?q=VIN: tabla con filas tr[data-catalogs-row-link] (una por catalogo)
+   *     -> /catalogs/<marca>/vehicle/vin/<vin>/<id>/ : links a TODOS los subgrupos
+   *        ("BODY - RADIATOR GRILLE,HEADLAMP BEZEL (1)") + tabla .catalogs-details-table
+   *     -> subgrupo: tarjetas a.catalogs-unit-card ("54010 CHASSIS ELECTRICAL - HEADLAMP")
+   *     -> diagrama: tr.catalogs-part con a.catalogs-part-number[data-part-fields] (JSON). */
+  var MAX_SUBGRUPOS = 3, MAX_UNIDADES = 2;
+
+  function absoluto(href, base) { try { return new URL(href, base).pathname; } catch (e) { return null; } }
+
+  function entradasVin(doc, base) {
+    return Array.prototype.map.call(doc.querySelectorAll("tr[data-catalogs-row-link]"), function (tr) {
+      var celda = function (k) { return txt(tr.querySelector('td[data-label="' + k + '"]')); };
+      return { url: absoluto(tr.getAttribute("data-catalogs-row-link"), base),
+               marca: celda("Brand"), region: celda("Region"), modelo: celda("Model"), detalle: celda("Details") };
+    }).filter(function (e) { return e.url; });
+  }
+
+  function vehiculoNuevo(doc) {
+    var v = { titulo: txt(doc.querySelector("h1")) };
+    Array.prototype.forEach.call(doc.querySelectorAll(".catalogs-details-table tr"), function (tr) {
+      var k = txt(tr.querySelector("th")), val = txt(tr.querySelector("td"));
+      if (k && val && k !== "Detail") v[k] = val.slice(0, 400);
+    });
+    return v;
+  }
+
+  function subgrupos(doc, basePath) {
+    var vistos = {};
+    return Array.prototype.map.call(doc.querySelectorAll('a[href^="' + basePath + '"]'), function (a) {
+      var u = a.getAttribute("href"), resto = u.slice(basePath.length).split("/").filter(Boolean);
+      if (resto.length !== 2 || vistos[u]) return null;          // grupo/subgrupo/
+      vistos[u] = 1;
+      return { url: u, nombre: txt(a).replace(/\s*\(\d+\)\s*$/, "") };
+    }).filter(Boolean);
+  }
+
+  function unidades(doc) {
+    return Array.prototype.map.call(doc.querySelectorAll("a.catalogs-unit-card"), function (a) {
+      return { url: a.getAttribute("href"), nombre: txt(a) };
+    });
+  }
+
+  function piezasNuevas(doc) {
+    return Array.prototype.map.call(doc.querySelectorAll("a.catalogs-part-number[data-part-number]"), function (a) {
+      var campos = {};
+      try { JSON.parse(a.getAttribute("data-part-fields") || "[]").forEach(function (f) { campos[f.key] = f.value; }); }
+      catch (e) {}
+      var nota = [campos.note, campos.producedFrom && ("desde " + campos.producedFrom),
+                  campos.producedTo && ("hasta " + campos.producedTo)].filter(Boolean).join(" ");
+      return { numero: a.getAttribute("data-part-number"), descripcion: campos.name || "",
+               cantidad: campos.qty || null, aplicabilidad: nota || null,
+               reemplazo: (campos.replacements && typeof campos.replacements === "string") ? campos.replacements : null,
+               callout: a.getAttribute("data-pnc") || null };
+    });
+  }
+
+  function puntajeNombre(nombre, m) {
+    var n = norm(nombre), s = 0;
+    m.en.forEach(function (t, i) { if (n.indexOf(t) >= 0) s += (m.en.length - i) * 2; });
+    var grupo = nombre.split(" - ")[0] || "";
+    if (s > 0 && m.grupos.test(grupo)) s += 1;
+    return s;
+  }
+
+  async function procesarNuevo(vin, descs) {
+    var r0 = await cargarBusqueda("/en/search/all?q=" + encodeURIComponent(vin));
+    var entradas = entradasVin(r0.doc, location.origin + "/");
+    if (!entradas.length) throw new Error("vin_sin_catalogo");
+    var rv = await cargarBusqueda(entradas[0].url);            // la /select/... redirige al vehiculo
+    var basePath = new URL(rv.url, location.origin).pathname;
+    if (!/\/vehicle\//.test(basePath)) {                     // fetch sin url final: armarla
+      basePath = entradas[0].url.replace("/select/", "/vehicle/").replace(/\/vin\/([^/]+)\/([^/]+)\/.*$/, "/vin/$1/$2/")
+        .replace(/\/select\/[^/]+\/vin\//, "/vin/");
+    }
+    var subs = subgrupos(rv.doc, basePath);
+    if (!subs.length) throw new Error("vin_sin_catalogo");
+    var vehiculo = vehiculoNuevo(rv.doc);
+    vehiculo.otras_entradas = entradas.slice(1).map(function (e) { return e.modelo; });
+
+    var diagramas = [], idxPorUrl = {}, pedidos = [];
+    for (var i = 0; i < descs.length; i++) {
+      var m = mapear(descs[i]);
+      if (!m) { pedidos.push({ descripcion: descs[i], estado: "sin_mapa", diagramas: [] }); continue; }
+      var cand = subs.map(function (sg) { return { sg: sg, s: puntajeNombre(sg.nombre, m) }; })
+        .filter(function (c) { return c.s > 0; }).sort(function (a, b) { return b.s - a.s; })
+        .slice(0, MAX_SUBGRUPOS);
+      if (!cand.length) { pedidos.push({ descripcion: descs[i], estado: "sin_diagrama", diagramas: [] }); continue; }
+      var idxs = [];
+      for (var c = 0; c < cand.length; c++) {
+        var rs = await cargarBusqueda(cand[c].sg.url);
+        var us = unidades(rs.doc).slice(0, MAX_UNIDADES);
+        for (var u = 0; u < us.length; u++) {
+          if (idxPorUrl[us[u].url] == null) {
+            var rd = await cargarBusqueda(us[u].url);
+            idxPorUrl[us[u].url] = diagramas.length;
+            diagramas.push({ grupo: cand[c].sg.nombre, nombre: us[u].nombre, piezas: piezasNuevas(rd.doc) });
+          }
+          idxs.push(idxPorUrl[us[u].url]);
+        }
+      }
+      pedidos.push({ descripcion: descs[i], estado: idxs.length ? "ok" : "sin_diagrama", diagramas: idxs });
+    }
+    return { fuente: "PartSouq", vin: vin, vehiculo: vehiculo, diagramas: diagramas, pedidos: pedidos,
+             grupos: pedidos.some(function (p) { return p.estado !== "ok"; })
+               ? subs.map(function (g) { return g.nombre; }) : undefined };
+  }
+
   /* ---- Gancho de prueba: expone parsers sin arrancar la cola ---- */
   if (window.__CATALOG_TEST__) {
     window.__catalogParsers = { parseGrupos: parseGrupos, parseTarjetas: parseTarjetas,
       parsePiezas: parsePiezas, parseVehiculo: parseVehiculo, siguiente: siguiente,
-      parsePrecios: parsePrecios, procesarPrecios: procesarPrecios,
+      parsePrecios: parsePrecios, procesarPrecios: procesarPrecios, procesarNuevo: procesarNuevo,
+      entradasVin: entradasVin, subgrupos: subgrupos, unidades: unidades, piezasNuevas: piezasNuevas,
       mapear: mapear, puntaje: puntaje, procesar: procesar };
     return;
   }
